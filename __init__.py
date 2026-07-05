@@ -3,8 +3,9 @@ from bpy.props import (
     StringProperty, BoolProperty, EnumProperty,
     FloatProperty, IntProperty
 )
-from bpy_extras.io_utils import ExportHelper
+from bpy_extras.io_utils import ExportHelper, ImportHelper
 from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name
+from .qt_mesh_importer import QtMeshImportError, import_qt_mesh_file
 from .qt_mesh_validate import validate_qt_mesh
 from .qt_bsdf_mat_importer import mat_to_quick3d
 from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate
@@ -32,10 +33,10 @@ LOD_LEVELS = (
 bl_info = {
     "name": "Qt Quick 3D Balsam Exporter Plugin",
     "author": "konvol",
-    "version": (2, 1, 0),
+    "version": (2, 2, 0),
     "blender": (4, 4, 0),
-    "location": "File > Export > Qt Quick 3D (.qml)",
-    "description": "Export scene as Qt Quick 3D QML + native .mesh assets (no balsam needed)",
+    "location": "File > Import/Export > Qt Quick 3D",
+    "description": "Export Qt Quick 3D QML/native .mesh assets and import Qt Quick 3D .mesh files",
     "category": "Import-Export",
 }
 
@@ -445,6 +446,18 @@ def hide_render(obj):
     return (obj.hide_render and not is_linked(obj)) or not has_renderable_collection
 
 
+def is_passive_rigid_body(obj):
+    rigid_body = getattr(obj, "rigid_body", None)
+    return rigid_body is not None and rigid_body.type == 'PASSIVE'
+
+
+def is_identity_scale(value, epsilon=1.0e-6):
+    if len(value) != 3:
+        return False
+
+    return all(abs(float(component) - 1.0) <= epsilon for component in value)
+
+
 # ─────────────────────────────────────────────────────────────────
 #  Main exporter
 # ─────────────────────────────────────────────────────────────────
@@ -466,6 +479,7 @@ class BalsamExporter:
         self.exp_meshes = {}   # blender_name → "meshes/x.mesh"
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
+        self.uses_physics = False
 
     def _mirror_key(self, mirror_info):
         if not mirror_info:
@@ -595,27 +609,50 @@ class BalsamExporter:
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
 
-            lines = [f"{I(d)}Model {{",
+            is_static_rigid_body = is_passive_rigid_body(obj)
+            model_indent = d + 1 if is_static_rigid_body else d
+            model_lines = [f"{I(model_indent)}Model {{",
                      # f"{I(d+1)}id: {nid}",
-                     f'{I(d+1)}objectName: "{obj.name}"',
-                     f'{I(d+1)}source: "{rel["source"]}"',  # qrc:/{rel}
-                     f"{I(d+1)}position: Qt.vector3d{pos}",
-                     f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
-                     f"{I(d+1)}scale: Qt.vector3d{sc}"]
+                     f'{I(model_indent+1)}objectName: "{obj.name}"',
+                     f'{I(model_indent+1)}source: "{rel["source"]}"',  # qrc:/{rel}
+                     f"{I(model_indent+1)}position: Qt.vector3d{pos}",
+                     f"{I(model_indent+1)}eulerRotation: Qt.vector3d{rot}",
+                     f"{I(model_indent+1)}scale: Qt.vector3d{sc}"]
             if mirror_info:
-                lines.append(
-                    f"{I(d+1)}property bool shipmateMirroredInstance: true")
-                lines.append(
-                    f"{I(d+1)}property vector3d shipmateSignedScale: Qt.vector3d{mirror_info['signed_scale']}")
+                model_lines.append(
+                    f"{I(model_indent+1)}property bool shipmateMirroredInstance: true")
+                model_lines.append(
+                    f"{I(model_indent+1)}property vector3d shipmateSignedScale: Qt.vector3d{mirror_info['signed_scale']}")
             if obj.hide_render:
-                lines.append(f"{I(d+1)}visible: false")
+                model_lines.append(f"{I(model_indent+1)}visible: false")
             if mat_ids_:
-                lines.append(
-                    f"{I(d+1)}materials: [ {', '.join(mat_ids_)} ]")
+                model_lines.append(
+                    f"{I(model_indent+1)}materials: [ {', '.join(mat_ids_)} ]")
             for child in obj.children:
-                lines.extend(ln for ln in "\n".join(
-                    self._obj_qml(child, d + 1)).split("\n"))
-            lines.append(f"{I(d)}}}")
+                model_lines.extend(ln for ln in "\n".join(
+                    self._obj_qml(child, model_indent + 1)).split("\n"))
+            model_lines.append(f"{I(model_indent)}}}")
+
+            if is_static_rigid_body:
+                self.uses_physics = True
+                lines = [f"{I(d)}StaticRigidBody {{"]
+                lines.extend(model_lines)
+                lines.extend([
+                    f"{I(d+1)}collisionShapes: TriangleMeshShape {{",
+                    f"{I(d+2)}enableDebugDraw: true",
+                    f'{I(d+2)}source: "{rel["source"]}"',
+                    f"{I(d+2)}position: Qt.vector3d{pos}",
+                    f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
+                ])
+                if not is_identity_scale(sc):
+                    lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
+                lines.extend([
+                    f"{I(d+1)}}}",
+                    f"{I(d)}}}",
+                ])
+            else:
+                lines = model_lines
+
             blocks.append("\n".join(lines))
 
         elif obj.type == 'LIGHT' and self.s.export_lights:
@@ -683,8 +720,11 @@ class BalsamExporter:
                         d=2) if self.s.export_animations else ""
 
         # ── Assemble QML ──────────────────────────────────────────
-        imports = ["import QtQuick", "import QtQuick3D",
-                   "", 'import LogicModule as LM']
+        imports = ["import QtQuick", "import QtQuick3D"]
+        if self.uses_physics:
+            imports.append("import QtQuick3D.Physics")
+
+        imports += ["", 'import LogicModule as LM']
         if self.s.export_animations:
             imports.append("import QtQuick.Timeline")
 
@@ -837,14 +877,83 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
         b2.prop(self, "convert_coords")
 
 
-def menu_func(self, context):
+class IMPORT_OT_qt_mesh(bpy.types.Operator, ImportHelper):
+    """Import a Qt Quick 3D native .mesh file as Blender mesh geometry."""
+    bl_idname = "import_scene.qt_quick3d_mesh"
+    bl_label = "Qt Quick 3D Mesh (.mesh)"
+    bl_options = {'PRESET', 'UNDO'}
+
+    filename_ext = ".mesh"
+    filter_glob: bpy.props.StringProperty(default="*.mesh", options={'HIDDEN'})
+
+    convert_coords: bpy.props.BoolProperty(
+        name="Convert Coordinates (Y-up -> Z-up)",
+        description="Convert Qt Quick 3D's Y-up coordinates back to Blender's Z-up coordinates",
+        default=True,
+    )
+    import_normals: bpy.props.BoolProperty(
+        name="Normals",
+        description="Import attr_norm as custom split normals when present",
+        default=True,
+    )
+    import_uvs: bpy.props.BoolProperty(
+        name="UVs",
+        description="Import attr_uv0 as a Blender UV map when present",
+        default=True,
+    )
+    import_colors: bpy.props.BoolProperty(
+        name="Vertex Colors",
+        description="Import attr_color as a corner color attribute when present",
+        default=True,
+    )
+
+    def execute(self, context):
+        try:
+            objects = import_qt_mesh_file(
+                self.filepath,
+                context=context,
+                convert_coords=self.convert_coords,
+                import_normals=self.import_normals,
+                import_uvs=self.import_uvs,
+                import_colors=self.import_colors,
+            )
+        except QtMeshImportError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        except Exception as exc:
+            self.report({'ERROR'}, f"Failed to import Qt .mesh: {exc}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Imported {len(objects)} Qt Quick 3D mesh object(s).")
+        return {'FINISHED'}
+
+    def draw(self, context):
+        lo = self.layout
+        lo.use_property_split = True
+        lo.use_property_decorate = False
+        b = lo.box()
+        b.label(text="Geometry", icon='MESH_DATA')
+        b.prop(self, "convert_coords")
+        b.prop(self, "import_normals")
+        b.prop(self, "import_uvs")
+        b.prop(self, "import_colors")
+
+
+def menu_func_export(self, context):
     self.layout.operator(EXPORT_OT_qt_balsam.bl_idname,
                          text="Qt Quick 3D (.qml)")
 
 
+def menu_func_import(self, context):
+    self.layout.operator(IMPORT_OT_qt_mesh.bl_idname,
+                         text="Qt Quick 3D Mesh (.mesh)")
+
+
 def register():
     bpy.utils.register_class(EXPORT_OT_qt_balsam)
-    bpy.types.TOPBAR_MT_file_export.append(menu_func)
+    bpy.utils.register_class(IMPORT_OT_qt_mesh)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
     shipmate_register()
 
@@ -852,7 +961,9 @@ def register():
 def unregister():
     shipmate_unregister()
 
-    bpy.types.TOPBAR_MT_file_export.remove(menu_func)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    bpy.utils.unregister_class(IMPORT_OT_qt_mesh)
     bpy.utils.unregister_class(EXPORT_OT_qt_balsam)
 
 
