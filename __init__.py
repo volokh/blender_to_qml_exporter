@@ -226,6 +226,16 @@ def sanitize(name):
     return ('_' + s if s and s[0].isdigit() else s) or '_'
 
 
+def qml_sanitize(name):
+    out_ = sanitize(name).capitalize()
+
+    return ('Col' + out_ if out_ and out_[0] == '_' else out_)
+
+
+def qt_pos_add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
 def qt_pos(value):
     """Blender Z-up → Qt Y-up coordinate conversion."""
     """Blender (X right, Y fwd, Z up)  →  Qt Quick 3D (X right, Y up, -Z fwd)"""
@@ -628,9 +638,12 @@ class BalsamExporter:
             if mat_ids_:
                 model_lines.append(
                     f"{I(model_indent+1)}materials: [ {', '.join(mat_ids_)} ]")
+
+            # children recursive
             for child in obj.children:
                 model_lines.extend(ln for ln in "\n".join(
                     self._obj_qml(child, model_indent + 1)).split("\n"))
+
             model_lines.append(f"{I(model_indent)}}}")
 
             if is_static_rigid_body:
@@ -644,8 +657,10 @@ class BalsamExporter:
                     f"{I(d+2)}position: Qt.vector3d{pos}",
                     f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
                 ])
+
                 if not is_identity_scale(sc):
                     lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
+
                 lines.extend([
                     f"{I(d+1)}}}",
                     f"{I(d)}}}",
@@ -662,6 +677,8 @@ class BalsamExporter:
         elif obj.type == 'EMPTY':
             lines = export_shipmate(obj, nid, d)
             if len(lines) == 0:
+                is_collection_ = obj.instance_type == "COLLECTION" and obj.instance_collection != None
+                #node_name_ = sanitize(obj.instance_collection.name) if is_collection_ else 'Node'
                 lines = [f"{I(d)}Node {{",
                          # f"{I(d+1)}id: {nid}",
                          f'{I(d+1)}objectName: "{obj.name}"',
@@ -669,15 +686,59 @@ class BalsamExporter:
                          f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
                          f"{I(d+1)}scale: Qt.vector3d{sc}"]
 
-                for child in obj.children:
-                    lines.extend(ln for ln in
-                                 "\n".join(self._obj_qml(child, d + 1)).split("\n"))
+                print(f'>>>EMPTY processing: {obj.name}, instance_type: {obj.instance_type}, instance_collection: {obj.instance_collection} \
+                    obj.lib: {obj.library.name if obj.library else None}, data.lib: {obj.data.library.name if obj.data and obj.data.library else None} \
+                    obj.instcol.lib: {obj.instance_collection.library.name if obj.instance_collection and obj.instance_collection.library else None}, children: {len(obj.children)}')
 
-                if obj.instance_type == "COLLECTION" and obj.instance_collection != None:
-                    col_offs_ = qt_pos(obj.instance_collection.instance_offset)
-                    for cobj in [o for o in obj.instance_collection.objects if o.parent is None]:
-                        lines.extend(ln for ln in
+                # children recursive
+                for child in obj.children:
+                    print(f'[{obj.name}] EMPTY processing w/ child: {child.name}')
+                    lines.extend(ln for ln in
+                                 "\n".join(self._obj_qml(child, d + 1, offset)).split("\n"))
+
+                if is_collection_:
+                    #col_offs_ = qt_pos(obj.instance_collection.instance_offset)
+
+                    #for chobj in obj.instance_collection.children:
+                    #    print(f'>>>COLLECTION processing collection child obj name: {chobj.name}, cobj: {chobj}')
+                    #    lines.extend(ln for ln in
+                    #             "\n".join(self._obj_qml(chobj, d + 1, col_offs_)).split("\n"))
+
+                    #write to file
+                    tabs_ = 0
+                    col_name_ = qml_sanitize(obj.instance_collection.name)
+                    data_ = self.process_collection(obj.instance_collection, tabs=tabs_ + 1)
+
+                    out_file_data_ = ['import QtQuick',
+                                      'import QtQuick3D',
+                                      'import LogicModule as LM',
+                                      '',
+                                      f'{I(tabs_)}Node {{']
+                    #out_file_data_.extend(lines)
+                    out_file_data_.extend(data_)
+                    qml_text_ = "\n".join(out_file_data_)
+                    qml_text_ += f'\n{I(tabs_)}}}'
+                    (self.root / f'{col_name_}.qml').write_text(qml_text_, encoding='utf-8')
+
+                    #lines.append(qml_text_)#, offset=col_offs_))
+                    lines = [f'{I(d)}{col_name_} {{',
+                             f'{I(d+1)}objectName: "{obj.name}"',
+                             f"{I(d+1)}position: Qt.vector3d{pos}",
+                             f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
+                             f"{I(d+1)}scale: Qt.vector3d{sc}"]
+
+                    '''
+                    for cobj in obj.instance_collection.all_objects:
+                        print(f'>>>COLLECTION processing collection obj: {cobj.name}, type: {cobj.type}, parent: {cobj.parent.name if cobj.parent else None}, hide_render: {cobj.hide_render}, offset: {col_offs_}')
+
+                        if cobj.parent is None:
+                            lines.extend(ln for ln in
                                      "\n".join(self._obj_qml(cobj, d + 1, col_offs_)).split("\n"))
+                        else:
+                            print(f'ingoring...')
+                    '''
+                #else:
+
 
                 lines.append(f"{I(d)}}}")
 
@@ -686,20 +747,24 @@ class BalsamExporter:
 
         return blocks
 
-    def process_collection(self, collection):
+    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0))):
         objs_ = []
         node_blocks_ = []
+        col_offs_ = qt_pos(collection.instance_offset)#qt_pos_add(qt_pos(collection.instance_offset), offset)
 
+        print(f'>>>COLLECTION processing: {collection.name}, hide_render: {collection.hide_render}, offset: {col_offs_}, instance offset: {collection.instance_offset}, offset: {offset}')
         for child_ in collection.children:
             if not child_.hide_render:
                 objs_.append(f'ch: {child_.name}')
-                node_blocks_.extend(self.process_collection(child_))
+                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_))
 
         # self elements in collection
         for obj_ in collection.objects:
-            if obj_.parent is None and not obj_.hide_render:
+            renderable_ = obj_.parent is None and not obj_.hide_render
+            print(f'[{collection.name}] processing objects in COLLECTION w/ obj: {obj_.name}, type: {obj_.type}, parent: {obj_.parent.name if obj_.parent else None}, hide_render: {obj_.hide_render} {", IGNORING..." if not renderable_ else ""}')
+            if renderable_:
                 objs_.append(f'{obj_.name}')
-                node_blocks_.extend(self._obj_qml(obj_, d=2))
+                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_))
 
         self.s.report({"INFO"}, f'root objs: {objs_}')
         return node_blocks_

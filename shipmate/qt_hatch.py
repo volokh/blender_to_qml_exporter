@@ -18,7 +18,7 @@ class QMLHatchProperties(PropertyGroup):
 
     hover_text: StringProperty(
         name="Hover text",
-        default="Rheostat switch",
+        default="Hatch",
         description="Hover text"
     )
 
@@ -48,7 +48,7 @@ class OBJECT_OT_add_qml_hatch(Operator):
 
     hover_text: StringProperty(
         name="Hover text",
-        default="Rheostat switch",
+        default="Hatch",
         description="Hover text"
     )
 
