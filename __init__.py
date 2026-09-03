@@ -711,6 +711,7 @@ class BalsamExporter:
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
+                                      'import QtQuick3D.Physics' if self.uses_physics else '',
                                       'import LogicModule as LM',
                                       '',
                                       f'{I(tabs_)}Node {{']
