@@ -461,6 +461,10 @@ def is_passive_rigid_body(obj):
     return rigid_body is not None and rigid_body.type == 'PASSIVE'
 
 
+def get_rigid_body(obj):
+    return getattr(obj, "rigid_body", None)
+
+
 def is_identity_scale(value, epsilon=1.0e-6):
     if len(value) != 3:
         return False
@@ -618,9 +622,9 @@ class BalsamExporter:
                     self._ensure_mat(slot.material, mirror_info)
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
-
-            is_static_rigid_body = is_passive_rigid_body(obj)
-            model_indent = d + 1 if is_static_rigid_body else d
+            rigid_body_ = get_rigid_body(obj)
+            #is_static_rigid_body = is_passive_rigid_body(obj)
+            model_indent = d + 1 if rigid_body_ != None else d
             model_lines = [f"{I(model_indent)}Model {{",
                      # f"{I(d+1)}id: {nid}",
                      f'{I(model_indent+1)}objectName: "{obj.name}"',
@@ -646,17 +650,46 @@ class BalsamExporter:
 
             model_lines.append(f"{I(model_indent)}}}")
 
-            if is_static_rigid_body:
+            if rigid_body_ != None:
+                is_static_ = rigid_body_.type == 'PASSIVE'
                 self.uses_physics = True
-                lines = [f"{I(d)}StaticRigidBody {{"]
+                lines = [f'{I(d)}StaticRigidBody {{' if is_static_ else f'{I(d)}DynamicRigidBody {{']
+                if not is_static_:
+                    lines.extend([f'{I(d+1)}isKinematic: {"true" if rigid_body_.kinematic else "false"}',
+                                  f'{I(d+1)}mass: {rigid_body_.mass}'
+                                 ])
+                if not rigid_body_.enabled or (is_static_ and rigid_body_.kinematic):
+                    lines.extend([f'{I(d+1)}simulationEnabled: false'])
+
+
                 lines.extend(model_lines)
-                lines.extend([
-                    f"{I(d+1)}collisionShapes: TriangleMeshShape {{",
-                    f"{I(d+2)}enableDebugDraw: true",
-                    f'{I(d+2)}source: "{rel["source"]}"',
-                    f"{I(d+2)}position: Qt.vector3d{pos}",
-                    f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
-                ])
+
+                def fill_collision_shape(rigid_body):
+                    lines_  = []
+                    if rigid_body.collision_shape == 'BOX':
+                        lines_.extend([f"{I(d+1)}collisionShapes: BoxShape {{"])
+                    if rigid_body.collision_shape == 'SPHERE':
+                        lines_.extend([f"{I(d+1)}collisionShapes: SphereShape {{"])
+                    if rigid_body.collision_shape == 'CAPSULE':
+                        lines_.extend([f"{I(d+1)}collisionShapes: CapsuleShape {{"])
+                    if rigid_body.collision_shape == 'CONVEX_HULL':
+                        lines_.extend([f"{I(d+1)}collisionShapes: ConvexMeshShape {{",
+                                       f'{I(d+2)}source: "{rel["source"]}"'])
+                    if rigid_body.collision_shape == 'MESH':
+                        lines_.extend([f"{I(d+1)}collisionShapes: TriangleMeshShape {{",
+                                       f'{I(d+2)}source: "{rel["source"]}"'])
+
+                    lines_.extend([
+                        f"{I(d+2)}enableDebugDraw: true",
+                        f"{I(d+2)}position: Qt.vector3d{pos}",
+                        f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
+                    ])
+
+                    return lines_
+
+
+                lines.extend(fill_collision_shape(rigid_body_))
+
 
                 if not is_identity_scale(sc):
                     lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
@@ -713,6 +746,7 @@ class BalsamExporter:
                                       'import QtQuick3D',
                                       'import QtQuick3D.Physics' if self.uses_physics else '',
                                       'import LogicModule as LM',
+                                      'import "."',
                                       '',
                                       f'{I(tabs_)}Node {{']
                     #out_file_data_.extend(lines)
@@ -790,7 +824,7 @@ class BalsamExporter:
         if self.uses_physics:
             imports.append("import QtQuick3D.Physics")
 
-        imports += ["", 'import LogicModule as LM']
+        imports += ["", 'import LogicModule as LM', 'import "."']
         if self.s.export_animations:
             imports.append("import QtQuick.Timeline")
 
