@@ -4,7 +4,7 @@ from bpy.props import (
     FloatProperty, IntProperty
 )
 from bpy_extras.io_utils import ExportHelper, ImportHelper
-from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name
+from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name, transform_collision_mesh
 from .qt_mesh_importer import QtMeshImportError, import_qt_mesh_file
 from .qt_mesh_validate import validate_qt_mesh
 from .qt_bsdf_mat_importer import mat_to_quick3d
@@ -17,7 +17,6 @@ import struct
 import math
 import bmesh
 import bpy
-import uuid
 import shutil
 import hashlib
 from mathutils import Matrix
@@ -154,42 +153,38 @@ def _sign_component(value):
 
 
 def qt_local_signed_scale(obj, convert_coords=True):
-    scale = tuple(obj.scale)
+    scale = tuple(obj.scale[i] * obj.delta_scale[i] for i in range(3))
     if convert_coords:
         return (scale[0], scale[2], scale[1])
     return scale
 
 
-def qt_local_trs_(obj, convert_coords=True):
-    m = qt_local_matrix(obj, convert_coords)
-
-    loc, rot, scale = m.decompose()
-    eul = rot.to_euler('XYZ')
-    signed_scale = qt_local_signed_scale(obj, convert_coords)
-    return (
-        (loc.x, loc.y, loc.z),
-        (math.degrees(eul.x), math.degrees(eul.y), math.degrees(eul.z)),
-        (
-            abs(scale.x) * _sign_component(signed_scale[0]),
-            abs(scale.y) * _sign_component(signed_scale[1]),
-            abs(scale.z) * _sign_component(signed_scale[2]),
-        ),
-    )
-
-
 def qt_local_trs(obj, convert_coords=True):
-    m = blender_local_matrix(obj)
-    if convert_coords:
-        m = AXIS_FIX @ m @ AXIS_FIX.inverted()
-
+    m = qt_local_matrix(obj, convert_coords)
     loc, rot, scale = m.decompose()
-    eul = rot.to_euler('XYZ')
 
-    return (
-        (loc.x, loc.y, loc.z),
-        (math.degrees(eul.x), math.degrees(eul.y), math.degrees(eul.z)),
-        (scale.x, scale.y, scale.z),
-    )
+    # Matrix decomposition cannot recover the user's original scale signs.
+    # Select those signs, then compensate the rotation by the SAME axis flips.
+    # Changing only scale (the old qt_local_trs_ helper) changes the transform.
+    preferred = [_sign_component(v) for v in qt_local_signed_scale(obj, convert_coords)]
+    flips = [_sign_component(scale[i]) * preferred[i] for i in range(3)]
+    if math.prod(flips) < 0.0:
+        # A parent inverse/constraint can introduce reflection not present in
+        # obj.scale. Keep the valid matrix decomposition in that case. A zero
+        # scale axis, however, is free to absorb the orientation correction.
+        zero_axis = next((i for i in range(3) if abs(scale[i]) < 1e-12), None)
+        if zero_axis is None:
+            preferred = [_sign_component(v) for v in scale]
+            flips = [1.0, 1.0, 1.0]
+        else:
+            preferred[zero_axis] *= -1.0
+            flips[zero_axis] *= -1.0
+
+    rotation_matrix = rot.to_matrix() @ Matrix.Diagonal(Vector(flips))
+    eul = rotation_matrix.to_euler('ZXY')  # Qt Quick 3D Node rotation order.
+    signed_scale = tuple(abs(scale[i]) * preferred[i] for i in range(3))
+    angles = tuple(0.0 if abs(math.degrees(v)) < 1e-5 else math.degrees(v) for v in eul)
+    return tuple(loc), angles, signed_scale
 
 
 #####
@@ -262,10 +257,15 @@ def inverse(t):
 #  PrincipledMaterial QML block
 # ─────────────────────────────────────────────────────────────────
 
-def mirror_info_for_obj(obj, convert_coords=True):
+def mirror_info_for_obj(obj, convert_coords=True, instance_matrix=None):
     signed_scale = qt_local_signed_scale(obj, convert_coords)
     scale_signs = tuple(_sign_component(v) for v in signed_scale)
-    mirrored = has_mirrored_handedness(obj, convert_coords)
+    effective_world = qt_world_matrix(obj, convert_coords)
+    if instance_matrix is not None:
+        # Collection contents do not include their instancer in matrix_world.
+        # Ordinary object parents already ARE included: do not multiply twice.
+        effective_world = instance_matrix @ effective_world
+    mirrored = effective_world.to_3x3().determinant() < -1e-6
 
     # There is no universal way to infer a Blender object's UV unwrap axes from
     # object scale alone. This matches the common generated-mesh convention:
@@ -476,6 +476,29 @@ def is_identity_scale(value, epsilon=1.0e-6):
 #  Main exporter
 # ─────────────────────────────────────────────────────────────────
 
+def renderable_collection_objects(collection):
+    """Visible membership paths inside this scene/instance source.
+
+    The entry collection may be hidden because it is an instance library.
+    Honor visibility below that entry, without consulting unrelated collection
+    memberships elsewhere in the scene.
+    """
+    objects = set()
+    visited = set()
+
+    def visit(current):
+        if current in visited:
+            return
+        visited.add(current)
+        objects.update(current.objects)
+        for child in current.children:
+            if not child.hide_render:
+                visit(child)
+
+    visit(collection)
+    return objects
+
+
 class BalsamExporter:
     def __init__(self, filepath, settings):
         self.root = Path(filepath).parent
@@ -491,6 +514,10 @@ class BalsamExporter:
         self.exp_images = {}   # blender_name → "images/x.png"
         self.exp_materials = {}   # blender_name → (id_str, qml_str)
         self.exp_meshes = {}   # blender_name → "meshes/x.mesh"
+        self.collision_meshes = {}
+        self.static_collision_blocks = []
+        self.mesh_name_owners = {}
+        self.component_files = set()
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
         self.uses_physics = False
@@ -509,7 +536,7 @@ class BalsamExporter:
         if not mat:
             return None
 
-        material_id_ = material_id_for_name(mat)
+        material_id_ = material_id_for_name(mat) + material_variant_suffix(mirror_info)
         material_key = material_id_
         if material_key not in self.exp_materials:
             q = mat_qml(mat, self.img_dir, self.exp_images, indent=0,
@@ -553,8 +580,32 @@ class BalsamExporter:
         return {'material_names': mesh_data_['material_names'], 'result': True}
         # self.exp_meshes[obj.name]['material_names'] = mesh_data_['material_names']
 
-    def _obj_qml(self, obj, d=2, offset=tuple((0, 0, 0))):
-        # hide_render_ = hide_render(obj)
+    def _static_collision_mesh(self, obj, source, world_matrix):
+        # Only the linear transform is baked: keep translation on the body for
+        # precision. Static bodies are reparented to the exported scene root,
+        # where no collection/object reflection can be lost by sceneScale().
+        linear = world_matrix.to_3x3()
+        values = tuple(float(linear[i][j]) for i in range(3) for j in range(3))
+        key = (source, values)
+        if key not in self.collision_meshes:
+            digest = hashlib.sha256(struct.pack('<9f', *values)).hexdigest()[:12]
+            suffix = 'mirrored' if linear.determinant() < 0.0 else 'collision'
+            base = Path(source)
+            relative = str(base.with_name(f'{base.stem}_{suffix}_{digest}.mesh'))
+            data = extract_mesh_data(obj, self.s.apply_modifiers, self.s.convert_coords)
+            data = transform_collision_mesh(data, linear)
+            write_mesh_file(data, str(self.root / relative))
+            self.collision_meshes[key] = relative
+        return self.collision_meshes[key]
+
+    def _obj_qml(self, obj, d=2, offset=tuple((0, 0, 0)), instance_matrix=None,
+                 export_parent_matrix=None, render_objects=None):
+
+        # Apply the same filter to top-level objects and all recursive children,
+        # before writing meshes, materials, custom components or physics bodies.
+        if obj.hide_render or (render_objects is not None and obj not in render_objects):
+            return []
+        hide_render_ = obj.hide_render
 
         cols_ = []
         for col in obj.users_collection:
@@ -563,10 +614,8 @@ class BalsamExporter:
         # library_ = obj.library.name if obj.library else ''
         library_name_ = obj.data.library.name if obj.data and obj.data.library else ''
         data_name_ = obj.data.name if obj.data else ''
-        self.s.report({"INFO"}, f"processing object: {obj.name}, type: {obj.type}, data_name: {data_name_}, instance_type: {obj.instance_type}, has_collection: {obj.instance_collection is not None}, offset: {offset}, cols: {cols_}, library: {library_name_}")
+        self.s.report({"INFO"}, f"processing object: {obj.name}, type: {obj.type}, data_name: {data_name_}, instance_type: {obj.instance_type}, has_collection: {obj.instance_collection is not None}, offset: {offset}, cols: {cols_}, library: {library_name_}, hide_render: {hide_render_}")
 
-        # if hide_render_:
-        #    return []
 
         blocks = []
         nid = f"node_{sanitize(obj.name)}"
@@ -575,20 +624,29 @@ class BalsamExporter:
 
         pos, rot, sc = qt_local_trs(obj, self.s.convert_coords)
         pos = tuple(map(sum, zip(pos, inverse(offset))))
-        mirror_info = mirror_info_for_obj(obj, self.s.convert_coords)
+        parent_matrix = export_parent_matrix if export_parent_matrix is not None else Matrix.Identity(4)
+        local_matrix = (Matrix.Translation(Vector(pos))
+                        @ Euler(tuple(math.radians(v) for v in rot), 'ZXY').to_matrix().to_4x4()
+                        @ Matrix.Diagonal(Vector((*sc, 1.0))))
+        exported_world = parent_matrix @ local_matrix
+        mirror_info = mirror_info_for_obj(obj, self.s.convert_coords, instance_matrix)
         # pos = qt_pos(obj.location)
         # rot = qt_rot(obj.rotation_euler)
         # sc = qt_scale(obj.scale)
 
         if obj.type in MESH_EXPORT_OBJECT_TYPES:
             export_data_name_ = data_name_ if obj.type == 'MESH' else f"{obj.type}_{data_name_}"
-            if obj.is_modified(bpy.context.scene, 'RENDER'):
-                self.s.report(
-                    {"WARNING"}, f"Geometry '{obj.data.name}' ({obj.name}, type: {obj.type}) has unapplied modifiers; exported geometry may not match viewport. Consider applying modifiers or enabling 'Apply Modifiers' option.")
-                random_uuid_ = uuid.uuid4()
-                short_hex_ = random_uuid_.hex[:6]
-                # treat as separate mesh to avoid overwriting non-modifier version if both exist
-                export_data_name_ += f'_{short_hex_}'
+            # Repeated instances of the same source object share evaluated
+            # geometry. Distinct objects with modifiers may require different
+            # meshes even when they use the same Blender mesh datablock.
+            modified = self.s.apply_modifiers and obj.is_modified(bpy.context.scene, 'RENDER')
+            owner = obj if modified or obj.type != 'MESH' else obj.data
+            base_key = (obj.type, library_name_, export_data_name_)
+            previous = self.mesh_name_owners.setdefault(base_key, owner)
+            if previous != owner:
+                identity = f"{obj.library.filepath if obj.library else ''}/{obj.name_full}"
+                suffix = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
+                export_data_name_ += f'_{suffix}'
 
             mesh_key_ = f"{obj.type}/LOD/{library_name_}/{export_data_name_}" if self.s.generate_lods and library_name_ != '' else (
                 f"{obj.type}/LOD/{export_data_name_}" if self.s.generate_lods else (
@@ -614,46 +672,88 @@ class BalsamExporter:
                 self.exp_meshes[mesh_key_] = {
                     'source': source_, 'material_names': result_['material_names']}
 
-            rel = self.exp_meshes[mesh_key_]
-            mat_ids_ = [mat_name_ for mat_name_ in rel['material_names']]
+            mesh_ = self.exp_meshes[mesh_key_]
+            mat_ids_ = [mat_name_ for mat_name_ in mesh_['material_names']]
 
+            # Mesh subset ordering stays unchanged; only the material bindings
+            # are remapped to this instance's mirror variant.
+            material_variants = {}
             for slot in obj.material_slots:
                 if slot.material and material_id_for_name(slot.material) in mat_ids_:
-                    self._ensure_mat(slot.material, mirror_info)
+                    base_id = material_id_for_name(slot.material)
+                    material_variants[base_id] = self._ensure_mat(slot.material, mirror_info)
+            mat_ids_ = [material_variants.get(mid, mid) for mid in mat_ids_]
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
             rigid_body_ = get_rigid_body(obj)
             #is_static_rigid_body = is_passive_rigid_body(obj)
-            model_indent = d + 1 if rigid_body_ != None else d
-            model_lines = [f"{I(model_indent)}Model {{",
+            #baked_static = (rigid_body_ is not None and rigid_body_.type == 'PASSIVE'
+            #                and rigid_body_.collision_shape in {'MESH', 'CONVEX_HULL'})
+            model_indent = d + 1 if rigid_body_ is not None else d
+            model_lines_ = [f"{I(model_indent)}Model {{",
                      # f"{I(d+1)}id: {nid}",
                      f'{I(model_indent+1)}objectName: "{obj.name}"',
-                     f'{I(model_indent+1)}source: "{rel["source"]}"',  # qrc:/{rel}
-                     f"{I(model_indent+1)}position: Qt.vector3d{pos}",
-                     f"{I(model_indent+1)}eulerRotation: Qt.vector3d{rot}",
-                     f"{I(model_indent+1)}scale: Qt.vector3d{sc}"]
-            if mirror_info:
-                model_lines.append(
-                    f"{I(model_indent+1)}property bool shipmateMirroredInstance: true")
-                model_lines.append(
-                    f"{I(model_indent+1)}property vector3d shipmateSignedScale: Qt.vector3d{mirror_info['signed_scale']}")
-            if obj.hide_render:
-                model_lines.append(f"{I(model_indent+1)}visible: false")
+                     f'{I(model_indent+1)}source: "{mesh_["source"]}"']  # qrc:/{mesh_}
+
+            if rigid_body_ is None:
+                model_lines_.extend([f'{I(model_indent+1)}position: Qt.vector3d{pos}',
+                                     f'{I(model_indent+1)}eulerRotation: Qt.vector3d{rot}',
+                                     f'{I(model_indent+1)}scale: Qt.vector3d{sc}'])
+
+            #if mirror_info:
+            #    model_lines_.append(
+            #        f"{I(model_indent+1)}property bool shipmateMirroredInstance: {'true' if mirror_info['mirrored'] else 'false'}")
+            #    model_lines_.append(
+            #        f"{I(model_indent+1)}property vector3d shipmateSignedScale: Qt.vector3d{mirror_info['signed_scale']}")
+
+            if not obj.visible_camera:
+                model_lines_.append(f"{I(model_indent+1)}visible: false")
+
+            #if hide_render_:
+            model_lines_.append(f"{I(model_indent+1)}/*hide_render: {hide_render_}*/")
             if mat_ids_:
-                model_lines.append(
+                model_lines_.append(
                     f"{I(model_indent+1)}materials: [ {', '.join(mat_ids_)} ]")
 
             # children recursive
             for child in obj.children:
-                model_lines.extend(ln for ln in "\n".join(
-                    self._obj_qml(child, model_indent + 1)).split("\n"))
+                model_lines_.extend(ln for ln in "\n".join(
+                    self._obj_qml(child, model_indent + 1, instance_matrix=instance_matrix, export_parent_matrix=exported_world, render_objects=render_objects)).split("\n"))
 
-            model_lines.append(f"{I(model_indent)}}}")
+            # closing Model
+            model_lines_.append(f"{I(model_indent)}}}")
 
+            '''if baked_static:
+                self.uses_physics = True
+                collision_source = self._static_collision_mesh(obj, mesh_['source'], exported_world)
+                shape = 'TriangleMeshShape' if rigid_body_.collision_shape == 'MESH' else 'ConvexMeshShape'
+                collision_lines = [
+                    f'{I(d)}StaticRigidBody {{',
+                    f'{I(d+1)}objectName: "{obj.name}_collision"',
+                    f'{I(d+1)}position: Qt.vector3d{tuple(exported_world.translation)}',
+                ]
+                if not rigid_body_.enabled or rigid_body_.kinematic:
+                    collision_lines.append(f'{I(d+1)}simulationEnabled: false')
+                collision_lines += [
+                    f'{I(d+1)}collisionShapes: {shape} {{',
+                    f'{I(d+2)}source: "{collision_source}"',
+                    f'{I(d+2)}enableDebugDraw: true',
+                    f'{I(d+2)}scale: Qt.vector3d(1.0, 1.0, 1.0)',
+                    f'{I(d+1)}}}', f'{I(d)}}}',
+                ]
+                # Keep placement-specific collision bodies in the scene,
+                # never in a reusable collection component.
+                self.static_collision_blocks.append("\n".join(collision_lines))
+                lines = model_lines_
+            el'''
             if rigid_body_ != None:
                 is_static_ = rigid_body_.type == 'PASSIVE'
                 self.uses_physics = True
-                lines = [f'{I(d)}StaticRigidBody {{' if is_static_ else f'{I(d)}DynamicRigidBody {{']
+                lines = [f'{I(d)}StaticRigidBody {{' if is_static_ else f'{I(d)}DynamicRigidBody {{',
+                         f'{I(d + 1)}position: Qt.vector3d{pos}',
+                         f'{I(d + 1)}eulerRotation: Qt.vector3d{rot}',
+                         f'{I(d + 1)}scale: Qt.vector3d{sc}']
+
                 if not is_static_:
                     lines.extend([f'{I(d+1)}isKinematic: {"true" if rigid_body_.kinematic else "false"}',
                                   f'{I(d+1)}mass: {rigid_body_.mass}'
@@ -661,8 +761,9 @@ class BalsamExporter:
                 if not rigid_body_.enabled or (is_static_ and rigid_body_.kinematic):
                     lines.extend([f'{I(d+1)}simulationEnabled: false'])
 
-
-                lines.extend(model_lines)
+                collision_source_ = mesh_["source"]
+                if mirror_info:
+                    collision_source_ = self._static_collision_mesh(obj, mesh_['source'], exported_world)
 
                 def fill_collision_shape(rigid_body):
                     lines_  = []
@@ -674,32 +775,33 @@ class BalsamExporter:
                         lines_.extend([f"{I(d+1)}collisionShapes: CapsuleShape {{"])
                     if rigid_body.collision_shape == 'CONVEX_HULL':
                         lines_.extend([f"{I(d+1)}collisionShapes: ConvexMeshShape {{",
-                                       f'{I(d+2)}source: "{rel["source"]}"'])
+                                       f'{I(d+2)}source: "{collision_source_}"'])
                     if rigid_body.collision_shape == 'MESH':
                         lines_.extend([f"{I(d+1)}collisionShapes: TriangleMeshShape {{",
-                                       f'{I(d+2)}source: "{rel["source"]}"'])
+                                       f'{I(d+2)}source: "{collision_source_}"'])
 
                     lines_.extend([
-                        f"{I(d+2)}enableDebugDraw: true",
-                        f"{I(d+2)}position: Qt.vector3d{pos}",
-                        f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
+                        f"{I(d + 2)}enableDebugDraw: true",
+                        #f"{I(d+2)}position: Qt.vector3d{pos}",
+                        #f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
+                        f"{I(d + 1)}}}",
                     ])
 
                     return lines_
 
 
                 lines.extend(fill_collision_shape(rigid_body_))
+                lines.extend(model_lines_)
 
+                #if not is_identity_scale(sc):
+                #    lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
 
-                if not is_identity_scale(sc):
-                    lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
-
+                # closing StaticRigidBody
                 lines.extend([
-                    f"{I(d+1)}}}",
                     f"{I(d)}}}",
                 ])
             else:
-                lines = model_lines
+                lines = model_lines_
 
             blocks.append("\n".join(lines))
 
@@ -723,12 +825,6 @@ class BalsamExporter:
                     obj.lib: {obj.library.name if obj.library else None}, data.lib: {obj.data.library.name if obj.data and obj.data.library else None} \
                     obj.instcol.lib: {obj.instance_collection.library.name if obj.instance_collection and obj.instance_collection.library else None}, children: {len(obj.children)}')
 
-                # children recursive
-                for child in obj.children:
-                    print(f'[{obj.name}] EMPTY processing w/ child: {child.name}')
-                    lines.extend(ln for ln in
-                                 "\n".join(self._obj_qml(child, d + 1, offset)).split("\n"))
-
                 if is_collection_:
                     #col_offs_ = qt_pos(obj.instance_collection.instance_offset)
 
@@ -739,8 +835,17 @@ class BalsamExporter:
 
                     #write to file
                     tabs_ = 0
+                    collection_matrix = qt_world_matrix(obj, self.s.convert_coords)
+                    if instance_matrix is not None:
+                        collection_matrix = instance_matrix @ collection_matrix
                     col_name_ = qml_sanitize(obj.instance_collection.name)
-                    data_ = self.process_collection(obj.instance_collection, tabs=tabs_ + 1)
+                    if collection_matrix.to_3x3().determinant() < -1e-6:
+                        # A reusable component contains fixed material bindings.
+                        # Odd/even instance contexts therefore need separate files.
+                        col_name_ += "_Mirrored"
+                    data_ = self.process_collection(
+                        obj.instance_collection, tabs=tabs_ + 1,
+                        instance_matrix=collection_matrix, export_parent_matrix=exported_world)
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
@@ -754,6 +859,7 @@ class BalsamExporter:
                     qml_text_ = "\n".join(out_file_data_)
                     qml_text_ += f'\n{I(tabs_)}}}'
                     (self.root / f'{col_name_}.qml').write_text(qml_text_, encoding='utf-8')
+                    self.component_files.add(f'{col_name_}.qml')
 
                     #lines.append(qml_text_)#, offset=col_offs_))
                     lines = [f'{I(d)}{col_name_} {{',
@@ -775,6 +881,16 @@ class BalsamExporter:
                 #else:
 
 
+                # Object children belong to this particular instance, not to
+                # its shared collection component. Append after choosing the
+                # final Node/component block so they cannot be discarded.
+                # Their transforms are parent-local; the collection offset has
+                # already been applied to the parent.
+                for child in obj.children:
+                    lines.extend(ln for ln in "\n".join(
+                        self._obj_qml(child, d + 1, instance_matrix=instance_matrix,
+                                      export_parent_matrix=exported_world, render_objects=render_objects)).split("\n"))
+
                 lines.append(f"{I(d)}}}")
 
             if len(lines) > 0:
@@ -782,16 +898,18 @@ class BalsamExporter:
 
         return blocks
 
-    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0))):
+    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None):
+        if render_objects is None:
+            render_objects = renderable_collection_objects(collection)
         objs_ = []
         node_blocks_ = []
-        col_offs_ = qt_pos(collection.instance_offset)#qt_pos_add(qt_pos(collection.instance_offset), offset)
+        col_offs_ = qt_pos(collection.instance_offset) if self.s.convert_coords else tuple(collection.instance_offset)
 
         print(f'>>>COLLECTION processing: {collection.name}, hide_render: {collection.hide_render}, offset: {col_offs_}, instance offset: {collection.instance_offset}, offset: {offset}')
         for child_ in collection.children:
             if not child_.hide_render:
                 objs_.append(f'ch: {child_.name}')
-                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_))
+                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects))
 
         # self elements in collection
         for obj_ in collection.objects:
@@ -799,7 +917,7 @@ class BalsamExporter:
             print(f'[{collection.name}] processing objects in COLLECTION w/ obj: {obj_.name}, type: {obj_.type}, parent: {obj_.parent.name if obj_.parent else None}, hide_render: {obj_.hide_render} {", IGNORING..." if not renderable_ else ""}')
             if renderable_:
                 objs_.append(f'{obj_.name}')
-                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_))
+                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects))
 
         self.s.report({"INFO"}, f'root objs: {objs_}')
         return node_blocks_
@@ -850,6 +968,9 @@ class BalsamExporter:
         qml += "    Node {\n"
         qml += "\n".join(node_blocks)
         qml += "\n    }\n"
+        # Static collision blocks already use scene-root coordinates.
+        # Nest them directly here instead of reparenting through a property.
+        qml += "\n".join(self.static_collision_blocks) + "\n"
 
         if anim:
             qml += "\n\n    // ── Animations ────────────────────────────────────\n"
@@ -869,18 +990,20 @@ class BalsamExporter:
                 ("shaders/bsdf_principled.vert", addon_dir / "shaders" / "bsdf_principled.vert"),
                 ("shaders/bsdf_principled.frag", addon_dir / "shaders" / "bsdf_principled.frag"),
             )
-            for rel_name, src_path in material_assets:
-                dest_path = self.root / rel_name
+            for mesh__name, src_path in material_assets:
+                dest_path = self.root / mesh__name
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src_path, dest_path)
-                shipmate_material_files.append(rel_name)
+                shipmate_material_files.append(mesh__name)
         '''
         # ── .qrc ──────────────────────────────────────────────────
         meshes_sources_ = []
         for item in self.exp_meshes:
             meshes_sources_.append(self.exp_meshes[item]['source'])
 
+        meshes_sources_.extend(self.collision_meshes.values())
         all_files = ([self.qml_path.name] +
+                     sorted(self.component_files) +
                      list(meshes_sources_) +
                      list(self.exp_images.values()) +
                      shipmate_material_files)

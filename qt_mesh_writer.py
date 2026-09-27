@@ -781,6 +781,41 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
 #  .mesh file writer  (mirrors MeshInternal::writeMeshData + Mesh::save)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def transform_collision_mesh(mesh, linear):
+    """Bake a Qt-space linear transform into an independent collision mesh.
+
+    Extract without LODs. Rebuild a position-only buffer, preserve material subset
+    ranges, update bounds, and reverse winding for odd reflections. Never mutate
+    the visual mesh or Blender's datablocks.
+    """
+    from mathutils import Vector
+    if abs(linear.determinant()) < 1e-12:
+        raise ValueError("Cannot export a collision mesh with a singular transform")
+    position = next(e for e in mesh['entries'] if e['name'] == ATTR_POSITION)
+    points = [linear @ Vector(struct.unpack_from('<3f', mesh['vbuf'],
+              i * mesh['stride'] + position['offset'])) for i in range(mesh['vertex_count'])]
+    indices = list(mesh['indices'])
+    if linear.determinant() < 0.0:
+        for i in range(0, len(indices), 3):
+            indices[i + 1], indices[i + 2] = indices[i + 2], indices[i + 1]
+    subsets = []
+    for original in mesh['subsets_data']:
+        subset = dict(original)
+        used = [points[indices[i]] for i in range(subset['subset_start'],
+                subset['subset_start'] + subset['icount'])]
+        if used:
+            subset['bmin'] = tuple(min(p[k] for p in used) for k in range(3))
+            subset['bmax'] = tuple(max(p[k] for p in used) for k in range(3))
+        subset.pop('lods', None)
+        subsets.append(subset)
+    result = dict(mesh)
+    result.update(entries=[{'name': ATTR_POSITION, 'type': COMP_FLOAT32, 'count': 3, 'offset': 0}],
+                  stride=12, vbuf=b''.join(struct.pack('<3f', *p) for p in points),
+                  indices=indices, subsets_data=subsets)
+    result['ibuf'], result['index_type'] = _pack_indices(indices)
+    return result
+
+
 def _write_mesh_body(mesh: dict) -> bytes:
     # buf = bytearray()
     tracker = _OffsetTracker()

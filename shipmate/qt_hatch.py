@@ -166,9 +166,13 @@ def qt_pos(value):
 
 
 def export_qml_hatch(obj, nid, d):
+    parent_ = obj.parent if obj.parent is not None else obj
+    rigid_body_ = getattr(parent_, "rigid_body", None)
     lines = [f'{I(d)}LM.Hatch {{',
              # f'{I(d+1)}id: {nid}',
-             f'{I(d+1)}node: parent',
+             f'{I(d+1)}node: {"parent" if rigid_body_ is None else "parent.parent"}',
+             f'{I(d+1)}picker.parent: {"node" if rigid_body_ is None else "parent"}',
+             f'{I(d+1)}picker.pickObject: {"node" if rigid_body_ is None else "parent"}',
              f'{I(d+1)}finalRotation: Qt.vector3d{qt_pos(qml_hatch_final_rotation(obj))}',
              f'{I(d+1)}finalPosition: Qt.vector3d{qt_pos(qml_hatch_final_position(obj))}'
             ]

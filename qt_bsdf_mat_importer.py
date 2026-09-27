@@ -1,5 +1,6 @@
 import bpy
 import math
+from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────
 #  Texture export
@@ -7,6 +8,32 @@ import math
 
 
 def save_image(image, img_dir):
+    library_name = sanitize(image.library.name) if image.library else ""
+    safe = sanitize(image.name.replace(".", "_"))
+
+    relative = Path(library_name) / f"{safe}.png"
+    dest = Path(img_dir) / relative
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    old_path = image.filepath_raw
+    old_format = image.file_format
+    valid_formats = image.bl_rna.properties["file_format"].enum_items.keys()
+
+    try:
+        image.filepath_raw = str(dest)
+        image.file_format = "PNG"
+        image.save()  # Same pipeline for packed and unpacked textures.
+    finally:
+        image.filepath_raw = old_path
+        # Blender can return "" when the buffer has no recognized format.
+        # That value cannot be assigned back through the RNA enum setter.
+        if old_format in valid_formats:
+            image.file_format = old_format
+
+    return (Path("images") / relative).as_posix()
+
+
+def save_image_(image, img_dir):
     library_name_ = image.library.name if image.library else ''
     safe = sanitize(image.name.replace('.', '_'))
     dest = img_dir / library_name_ / f"{safe}.png"
@@ -357,6 +384,7 @@ def _texture_transform_from_image_node(image_node):
         "generateMipmaps": True,
         "mipFilter": "Linear",
     }
+
     if not _is_default(scale[1]):
         transform["pivotV"] = 1.0
         transform["positionV"] = scale[1] - 1.0
@@ -473,9 +501,10 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
     ind1 = "    " * (indent + 1)
     base_color = node_val(bsdf, 'Color', (1.0, 1.0, 1.0, 0.0))
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
+    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
     out = [f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
-           f'{ind1}objectName: "{mat.name}"',
+           f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(base_color)}',
            # f'{ind1}alphaMode: PrincipledMaterial.Mask',
            # f'{ind1}cullMode: Material.NoCulling',
@@ -498,9 +527,10 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     ind = "    " * indent
     ind1 = "    " * (indent + 1)
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
+    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
     out = [f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
-           f'{ind1}objectName: "{mat.name}"',
+           f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(mat.diffuse_color)}',
            f'{ind1}cullMode: Material.NoCulling']
 
@@ -556,10 +586,11 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
         return None, None
 
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
+    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
     lines = [
         f"{ind}{material_type} {{",
         f"{ind1}id: {material_id or f'mat_{sanitize(mat.name)}'}",
-        f'{ind1}objectName: "{mat.name}"',
+        f'{ind1}objectName: "{mat_name_}"',
     ]
     if mirror_info:
         lines += _mirror_material_preamble(ind1, mirror_info)
