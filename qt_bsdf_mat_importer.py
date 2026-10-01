@@ -103,6 +103,10 @@ def _vec3(value):
     return f"Qt.vector3d({value[0]:.6f}, {value[1]:.6f}, {value[2]:.6f})"
 
 
+def _qml_culling_mode(mat):
+    return "Material.BackFaceCulling" if mat.use_backface_culling else "Material.NoCulling"
+
+
 def _mirror_material_preamble(ind1, mirror_info):
     if not mirror_info:
         return []
@@ -502,12 +506,13 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
     base_color = node_val(bsdf, 'Color', (1.0, 1.0, 1.0, 0.0))
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
     mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
-    out = [f"{ind}{material_type} {{",
+    out = [f"{ind}// users: {mat.users}",
+           f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
            f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(base_color)}',
            # f'{ind1}alphaMode: PrincipledMaterial.Mask',
-           # f'{ind1}cullMode: Material.NoCulling',
+           f'{ind1}cullMode: {_qml_culling_mode(mat)}',
            f"{ind1}metalness: {mat.metallic:.4f}",
            f"{ind1}roughness: {mat.roughness:.4f}"]
     if mirror_info:
@@ -528,11 +533,12 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     ind1 = "    " * (indent + 1)
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
     mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
-    out = [f"{ind}{material_type} {{",
+    out = [f"{ind}// users: {mat.users}",
+           f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
            f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(mat.diffuse_color)}',
-           f'{ind1}cullMode: Material.NoCulling']
+           f'{ind1}cullMode: {_qml_culling_mode(mat)}']
 
     if not mat.use_nodes:
         out += [f"{ind1}metalness: {mat.metallic:.4f}",
@@ -588,6 +594,7 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
     mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
     lines = [
+        f"{ind}// users: {mat.users}",
         f"{ind}{material_type} {{",
         f"{ind1}id: {material_id or f'mat_{sanitize(mat.name)}'}",
         f'{ind1}objectName: "{mat_name_}"',
@@ -926,7 +933,7 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     # spec_amount = max(0.0, min(1.0, specular_ior_level))
     lines.append(f"{ind1}specularAmount: {clamp01(specular_ior_level):.6f}")
 
-    lines.append(f"{ind1}cullMode: Material.NoCulling")
+    lines.append(f"{ind1}cullMode: {_qml_culling_mode(mat)}")
     lines.append(f"{ind}}}")
     return lines
 
