@@ -103,8 +103,14 @@ def _vec3(value):
     return f"Qt.vector3d({value[0]:.6f}, {value[1]:.6f}, {value[2]:.6f})"
 
 
-def _qml_culling_mode(mat):
-    return "Material.BackFaceCulling" if mat.use_backface_culling else "Material.NoCulling"
+def _qml_culling_mode(mat, mirror_info=None):
+    if not mat.use_backface_culling:
+        return "Material.NoCulling"
+    # An odd effective reflection reverses triangle winding. Keep the authored
+    # visible side by culling the opposite rasterizer face; normals alone cannot
+    # recover triangles already discarded by culling.
+    mirrored = bool(mirror_info and mirror_info["mirrored"])
+    return "Material.FrontFaceCulling" if mirrored else "Material.BackFaceCulling"
 
 
 def _mirror_material_preamble(ind1, mirror_info):
@@ -135,10 +141,11 @@ def _texture_property_lines(ind1, prop, src, transform=None):
     for key in ("pivotU", "pivotV", "positionU", "positionV", "scaleU", "scaleV", "rotationUV"):
         if key in transform:
             lines.append(f"{ind1}    {key}: {_qml_number(transform[key])}")
-    if transform.get("generateMipmaps"):
-        lines.append(f"{ind1}    generateMipmaps: true")
-    if transform.get("mipFilter"):
-        lines.append(f"{ind1}    mipFilter: Texture.{transform['mipFilter']}")
+    if "generateMipmaps" in transform:
+        lines.append(f"{ind1}    generateMipmaps: {_bool(transform['generateMipmaps'])}")
+    for key in ("minFilter", "magFilter", "mipFilter"):
+        if key in transform:
+            lines.append(f"{ind1}    {key}: Texture.{transform[key]}")
     lines.append(f'{ind1}    source: "{src}"')
     lines.append(f"{ind1}}}")
     return lines
@@ -146,6 +153,22 @@ def _texture_property_lines(ind1, prop, src, transform=None):
 
 def _custom_texture_input_lines(ind1, prop, src, transform=None):
     return _texture_property_lines(ind1, prop, src, transform)
+
+
+def _single_channel_png(img_dir, source):
+    """Inspect the exported file: Blender's in-memory buffer may be RGBA."""
+    relative = Path(source)
+    if relative.parts and relative.parts[0] == "images":
+        relative = Path(*relative.parts[1:])
+    try:
+        with (Path(img_dir) / relative).open("rb") as image_file:
+            header = image_file.read(26)
+    except OSError:
+        return False
+    # A grayscale PNG is uploaded as R8 by Qt. Native materials automatically
+    # fall back to R; a CustomMaterial TextureInput has no such channel fixup.
+    return (len(header) == 26 and header[:8] == b"\x89PNG\r\n\x1a\n"
+            and header[12:16] == b"IHDR" and header[25] == 0)
 
 
 def _first_link(socket):
@@ -377,22 +400,127 @@ def _texture_transform_from_image_node(image_node):
     if not image_node:
         return None
 
+    # Image Texture nodes have no independent mipmap toggle. Match EEVEE's
+    # sampler policy: Closest uses nearest texels without mipmaps; Sphere/Tube
+    # disable mipmaps because their projection has discontinuous derivatives.
+    # Qt Texture has no cubic sampler, so Cubic/Smart approximate with Linear.
+    nearest = image_node.interpolation == 'Closest'
+    mipmaps = not nearest and image_node.projection not in {'SPHERE', 'TUBE'}
+    filtering = "Nearest" if nearest else "Linear"
+    transform = {
+        "generateMipmaps": mipmaps,
+        "mipFilter": "Linear" if mipmaps else "None",
+        "minFilter": filtering,
+        "magFilter": filtering,
+    }
+
     scale = _texture_scale_from_vector_socket(image_node.inputs.get("Vector"))
     scale_changed = not _is_default(scale[0]) or not _is_default(scale[1])
-    if not scale_changed:
-        return None
-
-    transform = {
-        "scaleU": scale[0],
-        "scaleV": scale[1],
-        "generateMipmaps": True,
-        "mipFilter": "Linear",
-    }
+    if scale_changed:
+        transform["scaleU"] = scale[0]
+        transform["scaleV"] = scale[1]
 
     if not _is_default(scale[1]):
         transform["pivotV"] = 1.0
         transform["positionV"] = scale[1] - 1.0
     return transform
+
+
+def _texture_channel_route(socket, stack=(), visited=None):
+    """Return (image node, component or RGB, limitation) for a linked input.
+
+    Follow the selected output socket, never the first input of an arbitrary
+    node. A channel selector cannot encode math, HSV conversion or color ramps.
+    """
+    visited = set() if visited is None else visited
+    link = _first_link(socket)
+    if not link:
+        return None, None, None
+    node, output = link.from_node, link.from_socket
+    key = (node.as_pointer(), output.identifier,
+           tuple(n.as_pointer() for n in stack))
+    if key in visited:
+        return None, None, "cyclic texture connection"
+    visited = visited | {key}
+
+    def follow(input_socket, context=stack):
+        return _texture_channel_route(input_socket, context, visited)
+
+    if node.mute:
+        for internal in node.internal_links:
+            if internal.to_socket == output:
+                return follow(internal.from_socket)
+        return None, None, "muted node has no passthrough for this output"
+    if node.type == 'TEX_IMAGE' and node.image:
+        return node, 'A' if output.name == 'Alpha' else 'RGB', None
+    if node.type == 'REROUTE':
+        return follow(node.inputs[0])
+    if node.type in {'SEPARATE_COLOR', 'SEPRGB', 'SEPXYZ'}:
+        image, upstream, limitation = follow(node.inputs[0])
+        if limitation:
+            return image, None, limitation
+        if node.type == 'SEPARATE_COLOR' and node.mode != 'RGB':
+            return image, None, f"Separate Color {node.mode} requires baking"
+        names = {'Red': 'R', 'Green': 'G', 'Blue': 'B', 'Alpha': 'A',
+                 'R': 'R', 'G': 'G', 'B': 'B', 'X': 'R', 'Y': 'G', 'Z': 'B'}
+        # A scalar connected to Color/Vector is replicated into RGB/XYZ.
+        component = upstream if upstream in {'R', 'G', 'B', 'A'} else names.get(output.name)
+        return image, component, None
+    if node.type == 'NORMAL_MAP':
+        return follow(node.inputs.get('Color'))
+    if node.type == 'GROUP' and node.node_tree:
+        group_output = next((n for n in node.node_tree.nodes
+                             if n.type == 'GROUP_OUTPUT' and n.is_active_output), None)
+        if group_output:
+            inner = next((s for s in group_output.inputs
+                          if s.identifier == output.identifier), None)
+            return follow(inner, stack + (node,))
+        return None, None, "node group has no active output"
+    if node.type == 'GROUP_INPUT' and stack:
+        outer = next((s for s in stack[-1].inputs
+                      if s.identifier == output.identifier), None)
+        return follow(outer, stack[:-1])
+    return None, None, f"{node.bl_idname} cannot be represented by one texture channel; bake this input"
+
+
+def _texture_channel_lines(ind, channel_property, socket, image, source,
+                           img_dir, default, kind='scalar', single_flag=None):
+    node, channel, limitation = _texture_channel_route(socket)
+    lines = []
+    if node and node.image != image:
+        limitation = "texture channel and exported image do not match"
+        channel = None
+    grayscale = _single_channel_png(img_dir, source)
+    if kind == 'normal':
+        # Tangent-space normals encode a vector, not an individual component.
+        if channel not in (None, 'RGB') or limitation:
+            lines.append(f"{ind}// {channel_property}: normal input needs RGB; bake non-RGB node processing.")
+        return lines
+    if grayscale and channel == 'RGB' and kind == 'color':
+        channel = 'R'  # Replicate an R8 color image into RGB.
+    selected = channel in {'R', 'G', 'B', 'A'} and not limitation
+    if kind == 'color' and not selected:
+        if single_flag:
+            lines.append(f"{ind}{single_flag}: false")
+        if limitation:
+            lines.append(f"{ind}// {channel_property}: {limitation}.")
+        return lines
+    if grayscale and (channel == 'RGB' or channel in {'R', 'G', 'B'}):
+        channel = 'R'
+    elif channel == 'RGB':
+        # Blender converts Color to Value using luminance. The Qt channel enum
+        # cannot express that conversion. Keep the existing approximation and
+        # make the limitation explicit instead of claiming a selected channel.
+        limitation = "RGB to Value uses luminance in Blender; bake for an exact scalar map"
+        channel = default
+    if channel not in {'R', 'G', 'B', 'A'} or limitation:
+        channel = default
+    if limitation:
+        lines.append(f"{ind}// {channel_property}: {limitation}; fallback Material.{channel}.")
+    lines.append(f"{ind}{channel_property}: Material.{channel}")
+    if single_flag:
+        lines.append(f"{ind}{single_flag}: true")
+    return lines
 
 
 def first_linked_image_node(input_socket):
@@ -438,7 +566,9 @@ def image_node_from_socket_or_chain(sock, visited=None):
 
 
 def image_info_from_socket_or_normal_chain(sock):
-    image_node = image_node_from_socket_or_chain(sock)
+    image_node, _channel, _limitation = _texture_channel_route(sock)
+    if image_node is None:
+        image_node = image_node_from_socket_or_chain(sock)
     if not image_node:
         return None, None
     return image_node.image, _texture_transform_from_image_node(image_node)
@@ -511,8 +641,8 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
            f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(base_color)}',
-           # f'{ind1}alphaMode: PrincipledMaterial.Mask',
-           f'{ind1}cullMode: {_qml_culling_mode(mat)}',
+           f'{ind1}alphaMode: PrincipledMaterial.Blend',
+           f'{ind1}cullMode: {_qml_culling_mode(mat, mirror_info)}',
            f"{ind1}metalness: {mat.metallic:.4f}",
            f"{ind1}roughness: {mat.roughness:.4f}"]
     if mirror_info:
@@ -521,7 +651,6 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
             f"{ind1}opacity: {base_color[3] if len(base_color) > 3 else 0.0:.6f}")
     else:
         out += [
-            f'{ind1}alphaMode: PrincipledMaterial.Blend',
             f'{ind1}depthDrawMode: PrincipledMaterial.OpaquePrePassDepthDraw',
         ]
     out.append(f"{ind}}}")
@@ -532,13 +661,15 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     ind = "    " * indent
     ind1 = "    " * (indent + 1)
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
+    alpha_mode = "Blend" if mat.diffuse_color[3] < 1.0 else "Opaque"
     mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
     out = [f"{ind}// users: {mat.users}",
            f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
            f'{ind1}objectName: "{mat_name_}"',
            f'{ind1}baseColor: {rgba4(mat.diffuse_color)}',
-           f'{ind1}cullMode: {_qml_culling_mode(mat)}']
+           f'{ind1}alphaMode: PrincipledMaterial.{alpha_mode}',
+           f'{ind1}cullMode: {_qml_culling_mode(mat, mirror_info)}']
 
     if not mat.use_nodes:
         out += [f"{ind1}metalness: {mat.metallic:.4f}",
@@ -548,8 +679,6 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
         out += _mirror_material_preamble(ind1, mirror_info)
         out.append(
             f"{ind1}opacity: {mat.diffuse_color[3] if len(mat.diffuse_color) > 3 else 1.0:.6f}")
-    else:
-        out.append(f'{ind1}alphaMode: PrincipledMaterial.Opaque')
 
     out += [f"{ind}}}"]
     return out
@@ -805,16 +934,14 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     '''
     if alpha < 1. or opacity_img:
         lines.append(f"{ind1}opacity: {alpha:.6f}")
-        if not mirror_info:
-            lines.append(f"{ind1}alphaMode: PrincipledMaterial.Blend")
+        lines.append(f"{ind1}alphaMode: PrincipledMaterial.Blend")
         # lines.append(f"{ind1}blendMode: PrincipledMaterial.SourceOver")
         # lines.append(f"{ind1}alphaCutoff: 0.5")
         # lines.append(f"{ind1}invertOpacityMapValue: 0.0")
     else:
         if mirror_info:
             lines.append(f"{ind1}opacity: {alpha:.6f}")
-        else:
-            lines.append(f"{ind1}alphaMode: PrincipledMaterial.Opaque")
+        lines.append(f"{ind1}alphaMode: PrincipledMaterial.Opaque")
         # lines.append(f"{ind1}alphaCutoff: 0.5")
         # lines.append(f"{ind1}invertOpacityMapValue: 0.0")
 
@@ -826,7 +953,6 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
         else:
             lines += _texture_property_lines(
                 ind1, "opacityMap", opacity_src, opacity_transform)
-            lines.append(f"{ind1}opacityChannel: PrincipledMaterial.A")
 
     if transmission > 0.:
         lines.append(f"{ind1}transmissionFactor: {transmission:.6f}")
@@ -879,12 +1005,8 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
                 f"{ind1}clearcoatNormalStrength: {clearcoat_normal_strength}")
 
     lines.append(f"{ind1}clearcoatAmount: {clamp01(clearcoat):.6f}")
-    if not mirror_info:
-        lines.append(f"{ind1}clearcoatChannel: PrincipledMaterial.R")
     lines.append(
         f"{ind1}clearcoatRoughnessAmount: {clamp01(clearcoat_rough):.6f}")
-    if not mirror_info:
-        lines.append(f"{ind1}clearcoatRoughnessChannel: PrincipledMaterial.R")
     if mirror_info:
         lines.append(f"{ind1}clearcoatIor: {coat_ior:.6f}")
         lines.append(f"{ind1}clearcoatTint: {rgba4(coat_tint)}")
@@ -933,7 +1055,43 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     # spec_amount = max(0.0, min(1.0, specular_ior_level))
     lines.append(f"{ind1}specularAmount: {clamp01(specular_ior_level):.6f}")
 
-    lines.append(f"{ind1}cullMode: {_qml_culling_mode(mat)}")
+    # Only emit channels for maps actually exported on this material type.
+    # Full RGB colors and tangent-space normals are not scalar channel inputs.
+    channel_inputs = (
+        ("baseColor", base_img, ("Base Color",), "R", "color", "baseColorSingleChannelEnabled"),
+        ("metalness", metal_img, ("Metallic",), "B", "scalar", None),
+        ("roughness", rough_img, ("Roughness",), "G", "scalar", None),
+        ("diffuseRoughness", diffuse_rough_img, ("Diffuse Roughness",), "R", "scalar", None),
+        ("specular", specular_img, ("Specular IOR Level", "Specular"), "R", "scalar", None),
+        ("specularTint", specular_tint_img, ("Specular Tint",), "R", "color", "specularTintSingleChannelEnabled"),
+        ("anisotropic", anisotropic_img, ("Anisotropic",), "R", "scalar", None),
+        ("anisotropicRotation", anisotropic_rotation_img, ("Anisotropic Rotation",), "R", "scalar", None),
+        ("normal", normal_img, ("Normal",), "R", "normal", None),
+        ("subsurfaceWeight", subsurface_img, ("Subsurface Weight", "Subsurface"), "R", "scalar", None),
+        ("subsurfaceScale", subsurface_scale_img, ("Subsurface Scale",), "R", "scalar", None),
+        ("occlusion", ao_img, ("Occlusion",), "R", "scalar", None),
+        ("emissive", emissive_img, ("Emission Color", "Emission"), "R", "color", "emissiveSingleChannelEnabled"),
+        ("emissionStrength", emission_strength_img, ("Emission Strength",), "R", "scalar", None),
+        ("opacity", opacity_img, ("Alpha",), "A", "scalar", None),
+        ("transmission", transmission_img, ("Transmission Weight", "Transmission"), "R", "scalar", None),
+        ("thickness", thickness_img, ("Thickness",), "G", "scalar", None),
+        ("clearcoat", clearcoat_img, ("Coat Weight", "Clearcoat"), "R", "scalar", None),
+        ("clearcoatRoughness", clearcoat_rough_img, ("Coat Roughness", "Clearcoat Roughness"), "G", "scalar", None),
+        ("clearcoatNormal", clearcoat_normal_img, ("Coat Normal",), "R", "normal", None),
+        ("clearcoatTint", clearcoat_tint_img, ("Coat Tint",), "R", "color", None),
+        ("sheenWeight", sheen_img, ("Sheen Weight", "Sheen"), "R", "scalar", None),
+        ("sheenRoughness", sheen_rough_img, ("Sheen Roughness",), "R", "scalar", None),
+        ("sheenTint", sheen_tint_img, ("Sheen Tint",), "R", "color", None),
+    )
+    for prop, image, sockets, default, kind, single_flag in channel_inputs:
+        if not image or not any(line.strip().startswith(prop + "Map:") for line in lines):
+            continue
+        socket = next((inp(name) for name in sockets if inp(name) is not None), None)
+        lines += _texture_channel_lines(ind1, prop + "Channel", socket, image,
+                                        tex_source_from_image(image), img_dir,
+                                        default, kind, single_flag)
+
+    lines.append(f"{ind1}cullMode: {_qml_culling_mode(mat, mirror_info)}")
     lines.append(f"{ind}}}")
     return lines
 

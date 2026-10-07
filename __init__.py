@@ -257,24 +257,21 @@ def inverse(t):
 #  PrincipledMaterial QML block
 # ─────────────────────────────────────────────────────────────────
 
-def mirror_info_for_obj(obj, convert_coords=True, instance_matrix=None):
+def mirror_info_for_obj(obj, convert_coords=True, instance_matrix=None, effective_world=None):
     signed_scale = qt_local_signed_scale(obj, convert_coords)
     scale_signs = tuple(_sign_component(v) for v in signed_scale)
-    effective_world = qt_world_matrix(obj, convert_coords)
-    if instance_matrix is not None:
-        # Collection contents do not include their instancer in matrix_world.
-        # Ordinary object parents already ARE included: do not multiply twice.
-        effective_world = instance_matrix @ effective_world
+    if effective_world is None:
+        effective_world = qt_world_matrix(obj, convert_coords)
+        if instance_matrix is not None:
+            # Collection contents do not include their instancer in matrix_world.
+            effective_world = instance_matrix @ effective_world
     mirrored = effective_world.to_3x3().determinant() < -1e-6
 
-    # There is no universal way to infer a Blender object's UV unwrap axes from
-    # object scale alone. This matches the common generated-mesh convention:
-    # object X maps to U, the two remaining object axes contribute to V.
-    uv_scale = (scale_signs[0], scale_signs[1] * scale_signs[2])
-    uv_offset = (
-        1.0 if uv_scale[0] < 0.0 else 0.0,
-        1.0 if uv_scale[1] < 0.0 else 0.0,
-    )
+    # Object/instance reflection changes geometry and its tangent frame, not
+    # the mesh's UV coordinates. Keep UVs intact; authored texture Mapping
+    # transforms are exported separately by the material exporter.
+    uv_scale = (1.0, 1.0)
+    uv_offset = (0.0, 0.0)
     has_negative = any(v < 0.0 for v in scale_signs)
 
     if not mirrored and not has_negative:
@@ -287,6 +284,97 @@ def mirror_info_for_obj(obj, convert_coords=True, instance_matrix=None):
         "uv_scale": uv_scale,
         "uv_offset": uv_offset,
     }
+
+
+def never_mirror_enabled(obj):
+    """An object flag also protects the contents of a collection instance."""
+    collection = getattr(obj, "instance_collection", None)
+    return bool(obj.get("neverMirror", False) or
+                (collection is not None and collection.get("neverMirror", False)))
+
+
+def collection_has_never_mirror(collection, seen=None):
+    seen = set() if seen is None else seen
+    if collection in seen:
+        return False
+    seen.add(collection)
+    if collection.get("neverMirror", False):
+        return True
+    for obj in collection.objects:
+        if never_mirror_enabled(obj):
+            return True
+        nested = getattr(obj, "instance_collection", None)
+        if nested is not None and collection_has_never_mirror(nested, seen):
+            return True
+    return any(collection_has_never_mirror(child, seen) for child in collection.children)
+
+
+def never_mirror_frames(parent_linear, reference_linear, local_linear, position):
+    """Two QML TRS frames implementing restoration about the object's origin.
+
+    reference_linear is the desired world linear transform, with negative
+    scale signs removed along the ancestry. Origin placement stays mirrored.
+    SVD preserves shear from rotated/nonuniform ancestors; Matrix.decompose
+    alone would silently lose it. NumPy is bundled with Blender.
+    """
+    import numpy as np
+    parent = np.asarray(parent_linear, dtype=float)
+    reference = np.asarray(reference_linear, dtype=float)
+    local = np.asarray(local_linear, dtype=float)
+    try:
+        correction = np.linalg.solve(parent, reference) @ np.linalg.inv(local)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("neverMirror requires nonzero object and ancestor scales") from exc
+    if np.allclose(correction, np.eye(3), rtol=0, atol=1e-6):
+        return None
+    outer, scales, inner = np.linalg.svd(correction)
+    # QML rotations are proper rotations; put any reflection into scale.
+    if np.linalg.det(outer) < 0:
+        outer[:, -1] *= -1
+        scales[-1] *= -1
+    if np.linalg.det(inner) < 0:
+        inner[-1, :] *= -1
+        scales[-1] *= -1
+    pivot = np.asarray(position, dtype=float)
+    return (pivot.tolist(), outer.tolist(), scales.tolist(),
+            (-inner @ pivot).tolist(), inner.tolist())
+
+
+def wrap_never_mirror(blocks, depth, name, frames):
+    if frames is None or not blocks:
+        return blocks
+    position, outer, scale, inner_position, inner = frames
+    def vec(v):
+        return "Qt.vector3d(" + ", ".join(format(float(x), ".9g") for x in v) + ")"
+    def quat(rows):
+        q = Matrix(rows).to_quaternion()
+        return "Qt.quaternion(" + ", ".join(format(float(x), ".9g") for x in q) + ")"
+    indent = "    " * depth
+    lines = [indent + "Node {", indent + "    // neverMirror: restore shape; keep the mirrored world origin.",
+             indent + "    objectName: " + json.dumps(name + ".neverMirror"),
+             indent + "    position: " + vec(position),
+             indent + "    rotation: " + quat(outer),
+             indent + "    scale: " + vec(scale),
+             indent + "    Node {", indent + "        position: " + vec(inner_position),
+             indent + "        rotation: " + quat(inner)]
+    lines.extend("        " + line for block in blocks for line in block.splitlines())
+    lines.extend([indent + "    }", indent + "}"])
+    return ["\n".join(lines)]
+
+
+def restoration_component_suffix(actual_world, reference_world):
+    # Placement-independent context: repeated identical instances reuse files.
+    try:
+        correction = actual_world.to_3x3().inverted() @ reference_world.to_3x3()
+    except ValueError as exc:
+        raise ValueError("neverMirror requires nonzero ancestor scales") from exc
+    values = [0.0 if abs(correction[r][c]) < 1e-6 else float(correction[r][c])
+              for r in range(3) for c in range(3)]
+    if all(abs(values[r * 3 + c] - (1.0 if r == c else 0.0)) < 1e-6
+           for r in range(3) for c in range(3)):
+        return ""
+    signature = ",".join(f"{value:.6f}" for value in values)
+    return "_Restore_" + hashlib.sha256(signature.encode("ascii")).hexdigest()[:12]
 
 
 def mat_qml(mat, img_dir, exported_images, indent=1, material_id=None, mirror_info=None):
@@ -599,7 +687,7 @@ class BalsamExporter:
         return self.collision_meshes[key]
 
     def _obj_qml(self, obj, d=2, offset=tuple((0, 0, 0)), instance_matrix=None,
-                 export_parent_matrix=None, render_objects=None):
+                 export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
 
         # Apply the same filter to top-level objects and all recursive children,
         # before writing meshes, materials, custom components or physics bodies.
@@ -629,7 +717,27 @@ class BalsamExporter:
                         @ Euler(tuple(math.radians(v) for v in rot), 'ZXY').to_matrix().to_4x4()
                         @ Matrix.Diagonal(Vector((*sc, 1.0))))
         exported_world = parent_matrix @ local_matrix
-        mirror_info = mirror_info_for_obj(obj, self.s.convert_coords, instance_matrix)
+        reference_parent = reference_parent_matrix if reference_parent_matrix is not None else parent_matrix
+        reference_local = (Matrix.Translation(Vector(pos))
+                           @ Euler(tuple(math.radians(v) for v in rot), 'ZXY').to_matrix().to_4x4()
+                           @ Matrix.Diagonal(Vector((*[abs(v) for v in sc], 1.0))))
+        reference_world = reference_parent @ reference_local
+        frames = None
+        if never_mirror_enabled(obj):
+            frames = never_mirror_frames(
+                [list(row) for row in parent_matrix.to_3x3()],
+                [list(row) for row in reference_world.to_3x3()],
+                [list(row) for row in local_matrix.to_3x3()], pos)
+            origin = exported_world.translation.copy()
+            exported_world = reference_world.copy()
+            exported_world.translation = origin
+        reference_world.translation = exported_world.translation
+        mirror_info = mirror_info_for_obj(obj, self.s.convert_coords, instance_matrix,
+                                          effective_world=exported_world)
+        if never_mirror_enabled(obj):
+            # A restoration wrapper can have negative local scale while its
+            # combined world transform is ordinary. Bind ordinary materials.
+            mirror_info = None
         # pos = qt_pos(obj.location)
         # rot = qt_rot(obj.rotation_euler)
         # sc = qt_scale(obj.scale)
@@ -718,7 +826,7 @@ class BalsamExporter:
             # children recursive
             for child in obj.children:
                 model_lines_.extend(ln for ln in "\n".join(
-                    self._obj_qml(child, model_indent + 1, instance_matrix=instance_matrix, export_parent_matrix=exported_world, render_objects=render_objects)).split("\n"))
+                    self._obj_qml(child, model_indent + 1, instance_matrix=instance_matrix, export_parent_matrix=exported_world, render_objects=render_objects, reference_parent_matrix=reference_world)).split("\n"))
 
             # closing Model
             model_lines_.append(f"{I(model_indent)}}}")
@@ -835,17 +943,17 @@ class BalsamExporter:
 
                     #write to file
                     tabs_ = 0
-                    collection_matrix = qt_world_matrix(obj, self.s.convert_coords)
-                    if instance_matrix is not None:
-                        collection_matrix = instance_matrix @ collection_matrix
+                    collection_matrix = exported_world
                     col_name_ = qml_sanitize(obj.instance_collection.name)
                     if collection_matrix.to_3x3().determinant() < -1e-6:
                         # A reusable component contains fixed material bindings.
                         # Odd/even instance contexts therefore need separate files.
                         col_name_ += "_Mirrored"
+                    if collection_has_never_mirror(obj.instance_collection):
+                        col_name_ += restoration_component_suffix(exported_world, reference_world)
                     data_ = self.process_collection(
                         obj.instance_collection, tabs=tabs_ + 1,
-                        instance_matrix=collection_matrix, export_parent_matrix=exported_world)
+                        instance_matrix=collection_matrix, export_parent_matrix=exported_world, reference_parent_matrix=reference_world)
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
@@ -889,16 +997,16 @@ class BalsamExporter:
                 for child in obj.children:
                     lines.extend(ln for ln in "\n".join(
                         self._obj_qml(child, d + 1, instance_matrix=instance_matrix,
-                                      export_parent_matrix=exported_world, render_objects=render_objects)).split("\n"))
+                                      export_parent_matrix=exported_world, render_objects=render_objects, reference_parent_matrix=reference_world)).split("\n"))
 
                 lines.append(f"{I(d)}}}")
 
             if len(lines) > 0:
                 blocks.append("\n".join(lines))
 
-        return blocks
+        return wrap_never_mirror(blocks, d, obj.name, frames)
 
-    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None):
+    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
         if render_objects is None:
             render_objects = renderable_collection_objects(collection)
         objs_ = []
@@ -909,7 +1017,7 @@ class BalsamExporter:
         for child_ in collection.children:
             if not child_.hide_render:
                 objs_.append(f'ch: {child_.name}')
-                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects))
+                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects, reference_parent_matrix=reference_parent_matrix))
 
         # self elements in collection
         for obj_ in collection.objects:
@@ -917,7 +1025,7 @@ class BalsamExporter:
             print(f'[{collection.name}] processing objects in COLLECTION w/ obj: {obj_.name}, type: {obj_.type}, parent: {obj_.parent.name if obj_.parent else None}, hide_render: {obj_.hide_render} {", IGNORING..." if not renderable_ else ""}')
             if renderable_:
                 objs_.append(f'{obj_.name}')
-                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects))
+                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects, reference_parent_matrix=reference_parent_matrix))
 
         self.s.report({"INFO"}, f'root objs: {objs_}')
         return node_blocks_

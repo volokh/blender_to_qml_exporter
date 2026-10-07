@@ -175,3 +175,34 @@ The plugin automatically converts:
 ## License
 
 MIT — free to use in commercial and open-source Qt projects.
+
+
+## Keep selected objects unmirrored
+
+Add a boolean Blender custom property `neverMirror` to an object:
+
+```python
+bpy.data.objects["DC.1500Amp.001"]["neverMirror"] = True
+```
+
+On export, the object keeps the world position produced by its mirrored
+ancestors. Its shape and orientation are restored using the same transform
+chain with negative scale signs removed; positive scale magnitudes remain.
+Children follow this restored frame. Their own local transforms remain intact.
+UV coordinates and mesh files are unchanged, and material selection uses the
+corrected world transform.
+
+The flag can also be set on a collection-instance object, or on its referenced
+collection to protect all instances of that collection. A plain organizational
+collection is not a transform node; set the flag on its objects instead.
+
+The exporter inserts two QML Node wrappers when compensation is needed. This
+also handles rotated, nonuniformly scaled ancestors without losing shear.
+Collections containing protected descendants may get a `_Restore_...` component
+suffix when their compensation differs. Instances with identical compensation
+reuse that component regardless of position.
+
+This is export-time compensation, not a runtime constraint. Re-export after
+changing ancestor transforms. Zero object or ancestor scales cannot be inverted
+and are rejected. Existing materials/shaders do not need UV reflection enabled
+for a restored object. Reload the addon after installing this change.
