@@ -291,6 +291,43 @@ consistent if a later build or asset-processing step changes their prefix.
 - **Re-exporting:** use a dedicated output directory. Generated files are written
   there; obsolete files from earlier exports are not automatically cleaned up.
 
+## Cloth and flags
+
+A mesh with a render-enabled **Cloth** modifier exports as `LM.Flag`, using the
+matching Shipmate LogicModule. Its `meshSource` is the actual exported `.mesh`,
+with original UVs, material subset order, object transforms and children. Cloth
+meshes keep their full topology even when global LOD export is enabled.
+
+The exporter evaluates the rest mesh with Cloth temporarily disabled, while
+respecting the Apply Modifiers option for modelling modifiers. It restores the
+modifier visibility afterwards. Runtime wind animates the exported geometry;
+it does not replay Blender's baked cloth simulation or implement self-collision.
+
+The Cloth **Pin Group** is exported with graded weights. The vertex color alpha
+stream stores these weights for cloth meshes; both UV sets and vertex RGB remain
+available. With no pin group, the inferred pole edge is fixed. The cloth frame
+is inferred from geometry and the pinned edge. Cloth subsets reference named `LM.FlagMaterial` variants directly, for example
+`mat_AmericanFlag_BalaoBridge_flag`. Each variant references the original material
+through `sourceMaterial`, and stores immutable cloth frame and pin settings.
+`check_asset_library.rb` moves both declarations to `MaterialsLibrary.qml`, tracks
+the dependency, and upgrades older `LM.Flag` references automatically. Different
+cloth profiles get distinct variants; identical profiles can share one material.
+No material Instantiator or per-Flag material wrapper is required. Textures
+(including UV transforms), base color, roughness and metalness come from the
+source material. Wind direction is computed per rendered model in the shader.
+
+Wind normally follows **Environment → Wind / flags**. Optional numeric object
+custom properties `windStrength` (m/s), `windDirection` (world degrees, 0 = +X,
+90 = +Z), and `phase` override the shared settings. Give the cloth sufficient
+subdivision for smooth waves; export does not invent extra vertices.
+
+Regression test (factory startup does not open or modify your working blend):
+
+```sh
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+  --python tests/test_cloth_export.py
+```
+
 ## Source layout
 
 | File | Responsibility |

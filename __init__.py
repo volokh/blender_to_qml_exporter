@@ -5,6 +5,7 @@ from bpy.props import (
 )
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name, transform_collision_mesh
+from .qt_cloth import cloth_modifier, rest_cloth_mesh, cloth_metadata
 from .qt_mesh_importer import QtMeshImportError, import_qt_mesh_file
 from .qt_mesh_validate import validate_qt_mesh
 from .qt_bsdf_mat_importer import mat_to_quick3d
@@ -635,6 +636,34 @@ class BalsamExporter:
 
         return material_id_
 
+    def _ensure_flag_mat(self, mat, profile, obj):
+        base_id = self._ensure_mat(mat)
+        if not base_id:
+            return None
+        values = dict(profile, meshCloth=True)
+        for name in ('windStrength', 'windDirection', 'phase'):
+            value = obj.get(name)
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                values[name] = float(value)
+        preferred = re.sub(r'_blend$', '', base_id) + '_flag'
+        key = preferred
+        signature = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12]
+        def definition(identifier):
+            lines = ['LM.FlagMaterial {', f'    id: {identifier}', f'    sourceMaterial: {base_id}']
+            for name, value in sorted(values.items()):
+                if isinstance(value, tuple):
+                    encoded = f'Qt.vector3d{value}'
+                elif isinstance(value, bool):
+                    encoded = str(value).lower()
+                else:
+                    encoded = repr(value)
+                lines.append(f'    {name}: {encoded}')
+            return '\n'.join(lines + ['}'])
+        if key in self.exp_materials and self.exp_materials[key][1] != definition(key):
+            key += '_' + signature
+        self.exp_materials[key] = (key, definition(key))
+        return key
+
     def extract_and_write_mesh(self, obj, filepath, lod_specs=None):
         lod_label = " with embedded LODs" if lod_specs else ""
         self.s.report(
@@ -642,12 +671,13 @@ class BalsamExporter:
         # safe = sanitize(obj.data.name)
 
         try:
-            mesh_data_ = extract_mesh_data(
-                obj,
-                apply_modifiers=self.s.apply_modifiers,
-                convert_coords=self.s.convert_coords,
-                lod_specs=lod_specs,
-            )
+            with rest_cloth_mesh(obj):
+                mesh_data_ = extract_mesh_data(
+                    obj,
+                    apply_modifiers=self.s.apply_modifiers,
+                    convert_coords=self.s.convert_coords,
+                    lod_specs=lod_specs,
+                )
         except Exception as exc:
             self.s.report({"ERROR"}, f"Failed to extract '{obj.name}': {exc}")
             return {'result': False}
@@ -658,6 +688,13 @@ class BalsamExporter:
             return {'result': False}
 
         # mesh_name = bpy.path.clean_name(obj.name)
+        cloth_info = cloth_metadata(mesh_data_) if cloth_modifier(obj) else None
+        if cloth_info:
+            # GPU wind displacement must remain inside the mesh/shadow culling bounds.
+            padding = cloth_info['flagWidth'] * 3.0
+            for subset in mesh_data_['subsets_data']:
+                subset['bmin'] = tuple(v - padding for v in subset['bmin'])
+                subset['bmax'] = tuple(v + padding for v in subset['bmax'])
         write_mesh_file(mesh_data_, filepath)  # , subset_name=mesh_name)
         self.s.report({"INFO"}, f"{mesh_data_['vertex_count']} verts, "
                       f"{mesh_data_['index_count'] // 3} tris, entries: {len(mesh_data_['entries'])} → {filepath}"
@@ -665,7 +702,8 @@ class BalsamExporter:
 
         # validate_report_ = validate_qt_mesh(filepath)
         # self.s.report({"INFO"}, f'  Mesh validated: {validate_report_}')
-        return {'material_names': mesh_data_['material_names'], 'result': True}
+        return {'material_names': mesh_data_['material_names'], 'result': True,
+                'cloth': cloth_info}
         # self.exp_meshes[obj.name]['material_names'] = mesh_data_['material_names']
 
     def _static_collision_mesh(self, obj, source, world_matrix):
@@ -743,12 +781,13 @@ class BalsamExporter:
         # sc = qt_scale(obj.scale)
 
         if obj.type in MESH_EXPORT_OBJECT_TYPES:
+            cloth = cloth_modifier(obj)
             export_data_name_ = data_name_ if obj.type == 'MESH' else f"{obj.type}_{data_name_}"
             # Repeated instances of the same source object share evaluated
             # geometry. Distinct objects with modifiers may require different
             # meshes even when they use the same Blender mesh datablock.
             modified = self.s.apply_modifiers and obj.is_modified(bpy.context.scene, 'RENDER')
-            owner = obj if modified or obj.type != 'MESH' else obj.data
+            owner = obj if cloth or modified or obj.type != 'MESH' else obj.data
             base_key = (obj.type, library_name_, export_data_name_)
             previous = self.mesh_name_owners.setdefault(base_key, owner)
             if previous != owner:
@@ -762,6 +801,10 @@ class BalsamExporter:
                 )
             )
 
+            if cloth:
+                mesh_key_ += '/CLOTH'
+                export_data_name_ += '_cloth'
+
             self.s.report({"INFO"}, 'obj mesh key: ' + mesh_key_)
             if mesh_key_ not in self.exp_meshes:
                 if library_name_ != '':
@@ -769,16 +812,16 @@ class BalsamExporter:
                     lib_dir.mkdir(parents=False, exist_ok=True)
 
                 safe_data_name_ = sanitize(
-                    f"{export_data_name_}_LODs" if self.s.generate_lods else export_data_name_)
+                    f"{export_data_name_}_LODs" if self.s.generate_lods and not cloth else export_data_name_)
                 mp = self.mesh_dir / library_name_ / f"{safe_data_name_}.mesh"
                 source_ = f"meshes/{library_name_}/{safe_data_name_}.mesh" if library_name_ != '' else f"meshes/{safe_data_name_}.mesh"
                 result_ = self.extract_and_write_mesh(
-                    obj, str(mp), LOD_LEVELS if self.s.generate_lods else None)
+                    obj, str(mp), LOD_LEVELS if self.s.generate_lods and not cloth else None)
                 if not result_['result']:
                     return blocks
 
                 self.exp_meshes[mesh_key_] = {
-                    'source': source_, 'material_names': result_['material_names']}
+                    'source': source_, 'material_names': result_['material_names'], 'cloth': result_.get('cloth')}
 
             mesh_ = self.exp_meshes[mesh_key_]
             mat_ids_ = [mat_name_ for mat_name_ in mesh_['material_names']]
@@ -789,7 +832,7 @@ class BalsamExporter:
             for slot in obj.material_slots:
                 if slot.material and material_id_for_name(slot.material) in mat_ids_:
                     base_id = material_id_for_name(slot.material)
-                    material_variants[base_id] = self._ensure_mat(slot.material, mirror_info)
+                    material_variants[base_id] = self._ensure_flag_mat(slot.material, mesh_['cloth'], obj) if cloth else self._ensure_mat(slot.material, mirror_info)
             mat_ids_ = [material_variants.get(mid, mid) for mid in mat_ids_]
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
@@ -798,10 +841,27 @@ class BalsamExporter:
             #baked_static = (rigid_body_ is not None and rigid_body_.type == 'PASSIVE'
             #                and rigid_body_.collision_shape in {'MESH', 'CONVEX_HULL'})
             model_indent = d + 1 if rigid_body_ is not None else d
-            model_lines_ = [f"{I(model_indent)}Model {{",
+            model_type = "LM.Flag" if cloth else "Model"
+            source_value = f'Qt.resolvedUrl({json.dumps(mesh_["source"])})' if cloth else json.dumps(mesh_["source"])
+            source_property = "meshSource" if cloth else "source"
+            model_lines_ = [f"{I(model_indent)}{model_type} {{",
                      # f"{I(d+1)}id: {nid}",
                      f'{I(model_indent+1)}objectName: "{obj.name}"',
-                     f'{I(model_indent+1)}source: "{mesh_["source"]}"']  # qrc:/{mesh_}
+                     f'{I(model_indent+1)}{source_property}: {source_value}']  # qrc:/{mesh_}
+
+            if cloth:
+                for name, value in mesh_['cloth'].items():
+                    if isinstance(value, tuple):
+                        encoded = f"Qt.vector3d{value}"
+                    elif isinstance(value, bool):
+                        encoded = str(value).lower()
+                    else:
+                        encoded = repr(value)
+                    model_lines_.append(f'{I(model_indent+1)}{name}: {encoded}')
+                for name in ('windStrength', 'windDirection', 'phase'):
+                    value = obj.get(name)
+                    if isinstance(value, (int, float)) and math.isfinite(value):
+                        model_lines_.append(f'{I(model_indent+1)}{name}: {float(value)}')
 
             if rigid_body_ is None:
                 model_lines_.extend([f'{I(model_indent+1)}position: Qt.vector3d{pos}',
@@ -1061,7 +1121,7 @@ class BalsamExporter:
             mat_section += reindented + "\n\n"
 
         qml = f'// {stem}.qml\n' + '\n'.join(imports)
-        qml += f"\n\n// Qt Quick 3D — exported by Blender Qt Balsam Exporter\n"
+        qml += f"\n\n// Qt Quick 3D — exported by Blender Qt qml Exporter\n"
         qml += f"// Native .mesh files — no balsam conversion step required\n\n"
         qml += f"Node {{\n    id: root\n    objectName: '{stem}'"
         # if self.s.convert_coords:

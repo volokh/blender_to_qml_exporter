@@ -346,7 +346,7 @@ def material_id_for_name(mat):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def collect_mesh(obj, convert_coords):  # , depsgraph, apply_modifiers=True):
+def collect_mesh(obj, convert_coords, cloth_pin_group=None):  # , depsgraph, apply_modifiers=True):
     # eval_obj = obj.evaluated_get(depsgraph) if apply_modifiers else obj
     mesh = obj.to_mesh()
     if mesh is None:
@@ -421,7 +421,9 @@ def collect_mesh(obj, convert_coords):  # , depsgraph, apply_modifiers=True):
             else:
                 color_values.append(
                     (float(color[0]), float(color[1]), float(color[2]), 1.0))
-    has_color = color_values is not None
+    pin_group = obj.vertex_groups.get(cloth_pin_group) if cloth_pin_group else None
+    has_cloth_pins = pin_group is not None
+    has_color = color_values is not None or has_cloth_pins
 
     def fallback_tangent_basis(normal):
         n = Vector(normal)
@@ -507,7 +509,10 @@ def collect_mesh(obj, convert_coords):  # , depsgraph, apply_modifiers=True):
                     vdata += tan + binorm
 
                 if has_color:
-                    col_ = color_values[loop_index]
+                    col_ = color_values[loop_index] if color_values else (1.0, 1.0, 1.0, 1.0)
+                    if has_cloth_pins:
+                        weight = next((g.weight for g in vert.groups if g.group == pin_group.index), 0.0)
+                        col_ = (*col_[:3], weight)
                     vdata += col_
 
                 key = tuple(round(x, 6) for x in vdata)
@@ -575,6 +580,7 @@ def collect_mesh(obj, convert_coords):  # , depsgraph, apply_modifiers=True):
             'material_names': material_names,
             'has_uv1': has_uv1,
             'has_color': has_color,
+            'has_cloth_pins': has_cloth_pins,
             'subsets_data': subsets_data
             }
 
@@ -694,7 +700,9 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
     use_evaluated_object = apply_modifiers or obj.type != 'MESH'
     eval_obj = obj.evaluated_get(depsgraph) if use_evaluated_object else obj
 
-    mesh_ = collect_mesh(eval_obj, convert_coords)
+    cloth = next((m for m in getattr(obj, 'modifiers', ()) if m.type == 'CLOTH' and m.show_render), None)
+    pin_group = cloth.settings.vertex_group_mass if cloth else None
+    mesh_ = collect_mesh(eval_obj, convert_coords, pin_group)
     '''
     if apply_modifiers:
         eval_obj = obj.evaluated_get(depsgraph)
@@ -774,6 +782,7 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
         'indices':      indices_,
         'subsets_data': mesh_['subsets_data'],
         'material_names': mesh_['material_names'],
+        'has_cloth_pins': mesh_.get('has_cloth_pins', False),
     }
 
 
