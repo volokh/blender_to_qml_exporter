@@ -630,7 +630,7 @@ def node_val(node, name, default=None):
     return s.default_value if s is not None else default
 
 
-def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None):
+def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None, with_object_name=True):
     ind = "    " * indent
     ind1 = "    " * (indent + 1)
     base_color = node_val(bsdf, 'Color', (1.0, 1.0, 1.0, 0.0))
@@ -639,7 +639,7 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
     out = [f"{ind}// users: {mat.users}",
            f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
-           f'{ind1}objectName: "{mat_name_}"',
+           f'{ind1}objectName: "{mat_name_}"' if with_object_name else "",
            f'{ind1}baseColor: {rgba4(base_color)}',
            f'{ind1}alphaMode: PrincipledMaterial.Blend',
            f'{ind1}cullMode: {_qml_culling_mode(mat, mirror_info)}',
@@ -657,7 +657,7 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
     return out
 
 
-def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None):
+def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None, with_object_name=True):
     ind = "    " * indent
     ind1 = "    " * (indent + 1)
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
@@ -666,7 +666,7 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     out = [f"{ind}// users: {mat.users}",
            f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
-           f'{ind1}objectName: "{mat_name_}"',
+           f'{ind1}objectName: "{mat_name_}"' if with_object_name else "",
            f'{ind1}baseColor: {rgba4(mat.diffuse_color)}',
            f'{ind1}alphaMode: PrincipledMaterial.{alpha_mode}',
            f'{ind1}cullMode: {_qml_culling_mode(mat, mirror_info)}']
@@ -684,7 +684,7 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     return out
 
 
-def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None):
+def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None, with_object_name=True):
     # if not mat or not mat.use_nodes or not mat.node_tree:
     #    return []
 
@@ -726,7 +726,7 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
         f"{ind}// users: {mat.users}",
         f"{ind}{material_type} {{",
         f"{ind1}id: {material_id or f'mat_{sanitize(mat.name)}'}",
-        f'{ind1}objectName: "{mat_name_}"',
+        f'{ind1}objectName: "{mat_name_}"' if with_object_name else "",
     ]
     if mirror_info:
         lines += _mirror_material_preamble(ind1, mirror_info)
@@ -1096,12 +1096,12 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     return lines
 
 
-def mat_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None):
+def mat_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mirror_info=None, with_object_name=True):
     if not mat:
         return []
 
     if not mat.use_nodes or not mat.node_tree:
-        return default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info)
+        return default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)
 
     nodes_ = []
     for node_ in mat.node_tree.nodes:
@@ -1110,11 +1110,11 @@ def mat_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mi
 
     for node in mat.node_tree.nodes:
         if node.type == 'BSDF_PRINCIPLED':
-            return nodes_ + principled_bsdf_to_quick3d(node, mat, img_dir, exported_images, indent, material_id, mirror_info)
+            return nodes_ + principled_bsdf_to_quick3d(node, mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)
         elif node.type == 'BSDF_TRANSPARENT':
-            return nodes_ + transparent_bsdf_to_quick3d(node, mat, img_dir, exported_images, indent, material_id, mirror_info)
+            return nodes_ + transparent_bsdf_to_quick3d(node, mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)
 
     # bsdf = next((n for n in mat.node_tree.nodes if n.type ==
             # 'BSDF_PRINCIPLED'), None)
     # if not bsdf:
-    return nodes_ + default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info)
+    return nodes_ + default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)

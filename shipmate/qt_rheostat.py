@@ -1,9 +1,29 @@
 import bpy
 from bpy.types import Operator, Menu, Panel, PropertyGroup
-from bpy.props import FloatProperty, StringProperty, PointerProperty, FloatVectorProperty
+from bpy.props import BoolProperty, FloatProperty, StringProperty, PointerProperty, FloatVectorProperty
 
 
 class QMLRheostatProperties(PropertyGroup):
+    stepPositiveSound: StringProperty(
+        name="Positive step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    stepNegativeSound: StringProperty(
+        name="Negative step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    sequentialMode: BoolProperty(
+        name="Sequential Mode",
+        default=False,
+        description="Wait for each physical lever movement before accepting another scroll step"
+    )
+
     qml_type: StringProperty(
         name="QML Type",
         default="Qml.Rheostat",
@@ -47,9 +67,27 @@ class QMLRheostatProperties(PropertyGroup):
     )
 
 
-
-
 class OBJECT_OT_add_qml_rheostat(Operator):
+    stepPositiveSound: StringProperty(
+        name="Positive step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    stepNegativeSound: StringProperty(
+        name="Negative step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    sequentialMode: BoolProperty(
+        name="Sequential Mode",
+        default=False,
+        description="Wait for each physical lever movement before accepting another scroll step"
+    )
+
     bl_idname = "object.add_qml_rheostat"
     bl_label = "Qml.Rheostat"
     bl_description = "Add a Qml.Rheostat marker object"
@@ -84,7 +122,6 @@ class OBJECT_OT_add_qml_rheostat(Operator):
         default=(0.0, 0.,0.),
         description="Minimum|Default|Maximum value for the rheostat"
     )
-
 
     step: FloatProperty(
         name="Step Value",
@@ -129,6 +166,9 @@ class OBJECT_OT_add_qml_rheostat(Operator):
         # empty.qml_hatch.qml_type = "Qml.Hatch"
         # empty.qml_hatch.open_rotation = self.open_rotation
 
+        empty["stepPositiveSound"] = self.stepPositiveSound
+        empty["stepNegativeSound"] = self.stepNegativeSound
+        empty["sequentialMode"] = self.sequentialMode
         empty["qml_type"] = self.qml_type
         empty["change_step"] = self.change_step
         empty["change_duration"] = self.change_duration
@@ -191,6 +231,9 @@ class OBJECT_PT_qml_rheostat(Panel):
         layout.prop(obj, '["blocker_visible"]', text='Blocker Visible')
         layout.prop(obj, '["blocker_text"]', text='Blocker Text')
         layout.prop(obj, '["validator"]', text='Validator')
+        layout.prop(obj, 'qml_hatch_step_positive_sound', text='Step Positive Sound')
+        layout.prop(obj, 'qml_hatch_step_negative_sound', text='Step Negative Sound')
+        layout.prop(obj, 'qml_rheostat_sequential_mode', text='Sequential Mode')
 
 
 '''def menu_func_empty(self, context):
@@ -257,6 +300,20 @@ def qml_rheostat_blocker_text(obj):
 def qml_rheostat_validator(obj):
     return obj.get("validator", None)
 
+def get_step_pos_sound(obj):
+    return obj.get("stepPositiveSound", '')
+
+def set_step_pos_sound(obj, value):
+    obj["stepPositiveSound"] = value
+
+
+def get_step_neg_sound(obj):
+    return obj.get("stepNegativeSound", '')
+
+
+def set_step_neg_sound(obj, value):
+    obj["stepNegativeSound"] = value
+
 
 def qt_pos(value):
     """Blender Z-up → Qt Y-up coordinate conversion."""
@@ -266,12 +323,12 @@ def qt_pos(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def export_qml_rheostat(obj, nid, d):
+def export_qml_rheostat(obj, nid, d, with_object_name=True):
     value_ = qml_rheostat_value(obj)
     out_value_ = qml_rheostat_output_value(obj)
     lines = [f'{I(d)}LM.RheostatButton {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d+1)}objectName: '{obj.name}'",
+             f"{I(d+1)}objectName: '{obj.name}'" if with_object_name else "",
              f'{I(d+1)}node: parent',
              f'{I(d+1)}minValue: {value_[0]}',
              f'{I(d+1)}maxValue: {value_[2]}',
@@ -301,11 +358,42 @@ def export_qml_rheostat(obj, nid, d):
     if validator_:
          lines += [f'{I(d+1)}validator: {validator_}']
 
+    stepPositiveSound_ = get_step_pos_sound(obj)
+    if stepPositiveSound_:
+        lines += [f'{I(d+1)}wheelPositiveSound: "{stepPositiveSound_}"']
+
+    stepNegativeSound_ = get_step_neg_sound(obj)
+    if stepNegativeSound_:
+        lines += [f'{I(d+1)}wheelNegativeSound: "{stepNegativeSound_}"']
+
+    if obj.get("sequentialMode", False):
+        lines += [f'{I(d+1)}sequentialMode: true']
+
     lines += [f'{I(d)}}}']
     return lines
 
 
+def get_sequential_mode(obj):
+    return bool(obj.get("sequentialMode", False))
+
+
+def set_sequential_mode(obj, value):
+    obj["sequentialMode"] = value
+
+
 def qml_rheostat_register():
+    # RNA proxies expose new options even on markers created before these fields existed.
+    bpy.types.Object.qml_hatch_step_positive_sound = StringProperty(
+        name="Step Positive Sound", subtype='FILE_PATH', get=get_step_pos_sound, set=set_step_pos_sound)
+
+    bpy.types.Object.qml_hatch_step_negative_sound = StringProperty(
+        name="Step Negative Sound", subtype='FILE_PATH', get=get_step_neg_sound, set=set_step_neg_sound)
+
+    #bpy.types.Object.qml_rheostat_step_sound = StringProperty(
+    #    name="Step Sound", subtype='FILE_PATH', get=get_step_sound, set=set_step_sound)
+    bpy.types.Object.qml_rheostat_sequential_mode = BoolProperty(
+        name="Sequential Mode", get=get_sequential_mode, set=set_sequential_mode)
+
     for cls in classes:
         bpy.utils.register_class(cls)
 
@@ -314,6 +402,9 @@ def qml_rheostat_register():
 
 
 def qml_rheostat_unregister():
+    del bpy.types.Object.qml_hatch_step_positive_sound
+    del bpy.types.Object.qml_hatch_step_negative_sound
+    del bpy.types.Object.qml_rheostat_sequential_mode
     # bpy.types.VIEW3D_MT_add.remove(draw_shipmate_menu)
     # del bpy.types.Object.qml_hatch
 

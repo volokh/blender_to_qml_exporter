@@ -4,6 +4,20 @@ from bpy.props import FloatProperty, StringProperty, PointerProperty, FloatVecto
 
 
 class QMLHatchProperties(PropertyGroup):
+    stepPositiveSound: StringProperty(
+        name="Positive step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    stepNegativeSound: StringProperty(
+        name="Negative step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
     qml_type: StringProperty(
         name="QML Type",
         default="Qml.Hatch",
@@ -24,6 +38,20 @@ class QMLHatchProperties(PropertyGroup):
 
 
 class OBJECT_OT_add_qml_hatch(Operator):
+    stepPositiveSound: StringProperty(
+        name="Positive step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
+    stepNegativeSound: StringProperty(
+        name="Negative step sound",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional movement sound URL or audio file; plays only while the control moves"
+    )
+
     bl_idname = "object.add_qml_hatch"
     bl_label = "Qml.Hatch"
     bl_description = "Add a Qml.Hatch marker object"
@@ -73,6 +101,8 @@ class OBJECT_OT_add_qml_hatch(Operator):
         # empty.qml_hatch.qml_type = "Qml.Hatch"
         # empty.qml_hatch.open_rotation = self.open_rotation
 
+        empty["stepPositiveSound"] = self.stepPositiveSound
+        empty["stepNegativeSound"] = self.stepNegativeSound
         empty["qml_type"] = self.qml_type
         empty["final_rotation"] = self.final_rotation
         empty["final_position"] = self.final_position
@@ -111,6 +141,8 @@ class OBJECT_PT_qml_hatch(Panel):
         layout.prop(obj, '["hover_text"]', text='Hover Text')
         layout.prop(obj, '["value_out"]', text='Output')
         layout.prop(obj, '["validator"]', text='Validator')
+        layout.prop(obj, 'qml_hatch_step_positive_sound', text='Step Positive Sound')
+        layout.prop(obj, 'qml_hatch_step_negative_sound', text='Step Negative Sound')
 
 
 '''def menu_func_empty(self, context):
@@ -156,6 +188,21 @@ def qml_hatch_validator(obj):
     return obj.get("validator", None)
 
 
+def get_step_pos_sound(obj):
+    return obj.get("stepPositiveSound", '')
+
+
+def set_step_pos_sound(obj, value):
+    obj["stepPositiveSound"] = value
+
+
+def get_step_neg_sound(obj):
+    return obj.get("stepNegativeSound", '')
+
+
+def set_step_neg_sound(obj, value):
+    obj["stepNegativeSound"] = value
+
 
 def qt_pos(value):
     """Blender Z-up → Qt Y-up coordinate conversion."""
@@ -189,11 +236,26 @@ def export_qml_hatch(obj, nid, d):
     if validator_:
          lines += [f'{I(d+1)}validator: {validator_}']
 
+    stepPositiveSound_ = get_step_pos_sound(obj)
+    if stepPositiveSound_:
+        lines += [f'{I(d+1)}initSound: "{stepPositiveSound_}"']
+
+    stepNegativeSound_ = get_step_neg_sound(obj)
+    if stepNegativeSound_:
+        lines += [f'{I(d+1)}finalSound: "{stepNegativeSound_}"']
+
     lines += [f'{I(d)}}}']
     return lines
 
 
 def qml_hatch_register():
+    # RNA proxies expose new options even on markers created before these fields existed.
+    #bpy.types.Object.qml_hatch_step_positive_sound = StringProperty(
+    #    name="Step Positive Sound", subtype='FILE_PATH', get=get_step_pos_sound, set=set_step_pos_sound)
+
+    #bpy.types.Object.qml_hatch_step_negative_sound = StringProperty(
+    #    name="Step Negative Sound", subtype='FILE_PATH', get=get_step_neg_sound, set=set_step_neg_sound)
+
     for cls in classes:
         bpy.utils.register_class(cls)
 
@@ -202,6 +264,8 @@ def qml_hatch_register():
 
 
 def qml_hatch_unregister():
+    #del bpy.types.Object.qml_hatch_step_positive_sound
+    #del bpy.types.Object.qml_hatch_step_negative_sound
     # bpy.types.VIEW3D_MT_add.remove(draw_shipmate_menu)
     # del bpy.types.Object.qml_hatch
 

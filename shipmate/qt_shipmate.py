@@ -4,6 +4,11 @@ from .qt_hatch import qml_hatch_register, qml_hatch_unregister, is_qml_hatch, ex
 from .qt_rheostat import qml_rheostat_register, qml_rheostat_unregister, is_qml_rheostat, export_qml_rheostat, OBJECT_OT_add_qml_rheostat
 from .qt_animated_gauge import qml_animated_gauge_register, qml_animated_gauge_unregister, is_qml_animated_gauge, export_qml_animated_gauge, OBJECT_OT_add_qml_animated_gauge
 
+from .qt_property_animation import (
+    qml_property_animation_register, qml_property_animation_unregister,
+    is_qml_property_animation, export_qml_property_animation, OBJECT_OT_add_qml_property_animation,
+)
+
 # Shipmate plugin
 
 
@@ -28,16 +33,23 @@ class VIEW3D_MT_shipmate_add(Menu):
             text="Qml.AnimatedGauge",
             icon='EMPTY_AXIS'
         )
+        layout.operator(
+            OBJECT_OT_add_qml_property_animation.bl_idname,
+            text="Qml.PropertyAnimation",
+            icon='ANIM',
+        )
 
 
-def export_shipmate(obj, nid, data):
+def export_shipmate(obj, nid, data, parent_id = None, with_object_name=True):
     lines_ = []
-    if is_qml_hatch(obj):
+    if is_qml_property_animation(obj):
+        lines_ = export_qml_property_animation(obj, nid, data, parent_id)
+    elif is_qml_hatch(obj):
         lines_ = export_qml_hatch(obj, nid, data)
     elif is_qml_rheostat(obj):
-        lines_ = export_qml_rheostat(obj, nid, data)
+        lines_ = export_qml_rheostat(obj, nid, data, with_object_name=with_object_name)
     elif is_qml_animated_gauge(obj):
-        lines_ = export_qml_animated_gauge(obj, nid, data)
+        lines_ = export_qml_animated_gauge(obj, nid, data, with_object_name=with_object_name)
 
 
     return lines_;
@@ -53,6 +65,7 @@ def shipmate_register():
     qml_hatch_register()
     qml_rheostat_register()
     qml_animated_gauge_register()
+    qml_property_animation_register()
     bpy.utils.register_class(VIEW3D_MT_shipmate_add)
     bpy.types.VIEW3D_MT_add.append(draw_shipmate_menu)
 
@@ -60,6 +73,7 @@ def shipmate_register():
 def shipmate_unregister():
     bpy.types.VIEW3D_MT_add.remove(draw_shipmate_menu)
     bpy.utils.unregister_class(VIEW3D_MT_shipmate_add)
+    qml_property_animation_unregister()
     qml_animated_gauge_unregister()
     qml_rheostat_unregister()
     qml_hatch_unregister()

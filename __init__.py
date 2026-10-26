@@ -10,6 +10,8 @@ from .qt_mesh_importer import QtMeshImportError, import_qt_mesh_file
 from .qt_mesh_validate import validate_qt_mesh
 from .qt_bsdf_mat_importer import mat_to_quick3d
 from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate
+from .shipmate.qt_step_sound import export_speaker
+from .shipmate.qt_property_animation import is_qml_property_animation
 from mathutils import Vector, Euler
 from pathlib import Path
 import re
@@ -341,7 +343,7 @@ def never_mirror_frames(parent_linear, reference_linear, local_linear, position)
             (-inner @ pivot).tolist(), inner.tolist())
 
 
-def wrap_never_mirror(blocks, depth, name, frames):
+def wrap_never_mirror(blocks, depth, name, frames, with_object_name=True):
     if frames is None or not blocks:
         return blocks
     position, outer, scale, inner_position, inner = frames
@@ -352,7 +354,7 @@ def wrap_never_mirror(blocks, depth, name, frames):
         return "Qt.quaternion(" + ", ".join(format(float(x), ".9g") for x in q) + ")"
     indent = "    " * depth
     lines = [indent + "Node {", indent + "    // neverMirror: restore shape; keep the mirrored world origin.",
-             indent + "    objectName: " + json.dumps(name + ".neverMirror"),
+             indent + "    objectName: " + json.dumps(name + ".neverMirror") if with_object_name else "",
              indent + "    position: " + vec(position),
              indent + "    rotation: " + quat(outer),
              indent + "    scale: " + vec(scale),
@@ -378,8 +380,8 @@ def restoration_component_suffix(actual_world, reference_world):
     return "_Restore_" + hashlib.sha256(signature.encode("ascii")).hexdigest()[:12]
 
 
-def mat_qml(mat, img_dir, exported_images, indent=1, material_id=None, mirror_info=None):
-    return "\n".join(mat_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info))
+def mat_qml(mat, img_dir, exported_images, indent=1, material_id=None, mirror_info=None, with_object_name=True):
+    return "\n".join(mat_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name))
 
 
 def material_variant_suffix(mirror_info=None):
@@ -413,7 +415,7 @@ _LIGHT_MAP = {'POINT': 'PointLight', 'SUN': 'DirectionalLight',
               'SPOT': 'SpotLight',   'AREA': 'AreaLight'}
 
 
-def light_qml(obj, d=2, convert_coords=False):
+def light_qml(obj, d=2, convert_coords=False, with_object_name=True):
     l = obj.data
     t = _LIGHT_MAP.get(l.type, 'PointLight')
     ind = "    " * d
@@ -423,7 +425,7 @@ def light_qml(obj, d=2, convert_coords=False):
     # rot = qt_rot(obj.rotation_euler)
     col = l.color
     lines = [f"{ind}{t} {{",
-             f'{ind1}objectName: "{obj.name}"',
+             f'{ind1}objectName: "{obj.name}"' if with_object_name else "",
              f"{ind1}position: Qt.vector3d{pos}",
              f"{ind1}scale: {sc}",
              f"{ind1}eulerRotation: Qt.vector3d{rot}",
@@ -438,7 +440,7 @@ def light_qml(obj, d=2, convert_coords=False):
     return "\n".join(lines)
 
 
-def camera_qml(obj, d=2, convert_coords=False):
+def camera_qml(obj, d=2, convert_coords=False, with_object_name=True):
     cam = obj.data
     ind = "    " * d
     ind1 = "    " * (d+1)
@@ -452,7 +454,7 @@ def camera_qml(obj, d=2, convert_coords=False):
         lines = [f"{ind}PerspectiveCamera {{",
                  f"{ind1}fieldOfView: {math.degrees(cam.angle):.4f}",
                  f"{ind1}fieldOfViewOrientation: PerspectiveCamera.Vertical"]
-    lines += [f'{ind1}objectName: "{obj.name}"',
+    lines += [f'{ind1}objectName: "{obj.name}"' if with_object_name else "",
               f"{ind1}position: Qt.vector3d{pos}",
               f"{ind1}scale: {sc}",
               f"{ind1}eulerRotation: Qt.vector3d{rot}",
@@ -589,10 +591,11 @@ def renderable_collection_objects(collection):
 
 
 class BalsamExporter:
-    def __init__(self, filepath, settings):
+    def __init__(self, filepath, settings, with_object_name=None):
         self.root = Path(filepath).parent
         self.qml_path = Path(filepath)
         self.s = settings
+        self.with_object_name = bool(getattr(settings, "with_object_name", True) if with_object_name is None else with_object_name)
 
         self.s.report({"INFO"}, f"Working directory: '{self.root}'")
         self.mesh_dir = self.root / "meshes"
@@ -600,6 +603,7 @@ class BalsamExporter:
         for d in (self.mesh_dir, self.img_dir):
             d.mkdir(parents=True, exist_ok=True)
 
+        self.exp_sounds = {}
         self.exp_images = {}   # blender_name → "images/x.png"
         self.exp_materials = {}   # blender_name → (id_str, qml_str)
         self.exp_meshes = {}   # blender_name → "meshes/x.mesh"
@@ -610,6 +614,7 @@ class BalsamExporter:
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
         self.uses_physics = False
+        self.uses_spatial_audio = False
 
     def _mirror_key(self, mirror_info):
         if not mirror_info:
@@ -629,7 +634,7 @@ class BalsamExporter:
         material_key = material_id_
         if material_key not in self.exp_materials:
             q = mat_qml(mat, self.img_dir, self.exp_images, indent=0,
-                        material_id=material_id_, mirror_info=mirror_info)
+                        material_id=material_id_, mirror_info=mirror_info, with_object_name=self.with_object_name)
             self.exp_materials[material_key] = (material_id_, q)
             if mirror_info:
                 self.uses_shipmate_material = True
@@ -724,6 +729,37 @@ class BalsamExporter:
             self.collision_meshes[key] = relative
         return self.collision_meshes[key]
 
+    def _export_sound(self, sound):
+        if sound is None:
+            return ""
+
+        source = sound if isinstance(sound, str) else sound.filepath
+        print(f"sound: {source}, sound: {sound.name}, source:{source}")
+        if sound.name.startswith("qrc:/"):
+            return sound.name
+
+        packed = sound.packed_file
+        path = Path(bpy.path.abspath(sound.filepath, library=sound.library))
+        try:
+            data = bytes(packed.data) if packed else path.read_bytes()
+        except OSError as error:
+            self.s.report({'WARNING'}, f"Cannot export speaker sound {sound.name}: {error}")
+            return path.resolve().as_uri()
+
+        suffix = re.sub(r"[^A-Za-z0-9.]", "_", path.suffix.lower()) or ".wav"
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        key = digest + suffix
+
+        if key not in self.exp_sounds:
+            name = re.sub(r'[^A-Za-z0-9_-]', '_', path.stem or sound.name) or "sound"
+            relative = f"sounds/{name}-{digest}{suffix}"
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            self.exp_sounds[key] = relative
+
+        return self.exp_sounds[key]
+
     def _obj_qml(self, obj, d=2, offset=tuple((0, 0, 0)), instance_matrix=None,
                  export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
 
@@ -746,6 +782,7 @@ class BalsamExporter:
         blocks = []
         nid = f"node_{sanitize(obj.name)}"
         self.node_ids[obj.name] = nid
+        hosts_property_animation = any(is_qml_property_animation(child) and not child.hide_render for child in obj.children)
         def I(n): return "    " * n
 
         pos, rot, sc = qt_local_trs(obj, self.s.convert_coords)
@@ -846,8 +883,11 @@ class BalsamExporter:
             source_property = "meshSource" if cloth else "source"
             model_lines_ = [f"{I(model_indent)}{model_type} {{",
                      # f"{I(d+1)}id: {nid}",
-                     f'{I(model_indent+1)}objectName: "{obj.name}"',
+                     f'{I(model_indent+1)}objectName: "{obj.name}"' if self.with_object_name else "",
                      f'{I(model_indent+1)}{source_property}: {source_value}']  # qrc:/{mesh_}
+
+            if hosts_property_animation:
+                model_lines_.insert(1, f"{I(model_indent+1)}id: {nid}")
 
             if cloth:
                 for name, value in mesh_['cloth'].items():
@@ -877,6 +917,12 @@ class BalsamExporter:
             if not obj.visible_camera:
                 model_lines_.append(f"{I(model_indent+1)}visible: false")
 
+            if not obj.visible_shadow:
+                model_lines_.append(f"{I(model_indent+1)}castsShadows: false")
+
+            #if obj.visible_raycast:
+            #    model_lines_.append(f"{I(model_indent+1)}pickable: true")
+
             #if hide_render_:
             model_lines_.append(f"{I(model_indent+1)}/*hide_render: {hide_render_}*/")
             if mat_ids_:
@@ -897,7 +943,7 @@ class BalsamExporter:
                 shape = 'TriangleMeshShape' if rigid_body_.collision_shape == 'MESH' else 'ConvexMeshShape'
                 collision_lines = [
                     f'{I(d)}StaticRigidBody {{',
-                    f'{I(d+1)}objectName: "{obj.name}_collision"',
+                    f'{I(d+1)}objectName: "{obj.name}_collision"' if self.with_object_name else "",
                     f'{I(d+1)}position: Qt.vector3d{tuple(exported_world.translation)}',
                 ]
                 if not rigid_body_.enabled or rigid_body_.kinematic:
@@ -973,18 +1019,44 @@ class BalsamExporter:
 
             blocks.append("\n".join(lines))
 
+        elif obj.type == 'SPEAKER':
+            self.uses_spatial_audio = True
+            source = self._export_sound(obj.data.sound)
+            if abs(obj.data.pitch - 1.0) > 0.000001:
+                self.s.report({'WARNING'}, f"Speaker {obj.name}: SpatialSound has no pitch control; pitch {obj.data.pitch} is retained as metadata.")
+
+            animation = obj.animation_data
+            if animation and animation.nla_tracks:
+                self.s.report({'WARNING'}, f"Speaker {obj.name}: NLA audio playback scheduling is not exported; use autoPlay/loops or runtime playback controls.")
+            #lines = [f"{I(d)}Node {{", f"{I(d+1)}id: {nid}",
+            #         f"{I(d+1)}objectName: {json.dumps(obj.name)}",
+            #         f"{I(d+1)}position: Qt.vector3d{pos}",
+            #         f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
+            #         f"{I(d+1)}scale: Qt.vector3d{sc}"]
+            lines = export_speaker(obj, nid, d, source, pos, rot, sc, bpy.context.scene.audio_distance_model, self.s.convert_coords, with_object_name=self.with_object_name)
+            for child in obj.children:
+                lines.extend(self._obj_qml(child, d + 1, instance_matrix=instance_matrix,
+                                          export_parent_matrix=exported_world, render_objects=render_objects,
+                                          reference_parent_matrix=reference_world))
+            #lines.append(f"{I(d)}}}")
+            blocks.append("\n".join(lines))
+
         elif obj.type == 'LIGHT' and self.s.export_lights:
-            blocks.append(light_qml(obj, d, self.s.convert_coords))
+            blocks.append(light_qml(obj, d, self.s.convert_coords, self.with_object_name))
         elif obj.type == 'CAMERA' and self.s.export_cameras:
-            blocks.append(camera_qml(obj, d, self.s.convert_coords))
+            blocks.append(camera_qml(obj, d, self.s.convert_coords, self.with_object_name))
         elif obj.type == 'EMPTY':
-            lines = export_shipmate(obj, nid, d)
+            parent_id = self.node_ids.get(obj.parent.name, None) if obj.parent else None
+            lines = export_shipmate(obj, nid, d, parent_id, with_object_name=self.with_object_name)
+            if any("LM.SpatialSound {" in line for line in lines):
+                self.uses_spatial_audio = True
+
             if len(lines) == 0:
                 is_collection_ = obj.instance_type == "COLLECTION" and obj.instance_collection != None
                 #node_name_ = sanitize(obj.instance_collection.name) if is_collection_ else 'Node'
                 lines = [f"{I(d)}Node {{",
                          # f"{I(d+1)}id: {nid}",
-                         f'{I(d+1)}objectName: "{obj.name}"',
+                         f'{I(d+1)}objectName: "{obj.name}"' if self.with_object_name else "",
                          f"{I(d+1)}position: Qt.vector3d{pos}",
                          f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
                          f"{I(d+1)}scale: Qt.vector3d{sc}"]
@@ -1017,11 +1089,13 @@ class BalsamExporter:
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
+                                      'import QtQuick3D.SpatialAudio' if any('LM.SpatialSound {' in block for block in data_) else '',
                                       'import QtQuick3D.Physics' if self.uses_physics else '',
                                       'import LogicModule as LM',
                                       'import "."',
                                       '',
                                       f'{I(tabs_)}Node {{']
+                                      #f'{I(tabs_+1)}id: root' if any(is_qml_property_animation(child) and child.parent is None for child in obj.instance_collection.all_objects) else '']
                     #out_file_data_.extend(lines)
                     out_file_data_.extend(data_)
                     qml_text_ = "\n".join(out_file_data_)
@@ -1031,7 +1105,7 @@ class BalsamExporter:
 
                     #lines.append(qml_text_)#, offset=col_offs_))
                     lines = [f'{I(d)}{col_name_} {{',
-                             f'{I(d+1)}objectName: "{obj.name}"',
+                             f'{I(d+1)}objectName: "{obj.name}"' if self.with_object_name else "",
                              f"{I(d+1)}position: Qt.vector3d{pos}",
                              f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
                              f"{I(d+1)}scale: Qt.vector3d{sc}"]
@@ -1049,6 +1123,9 @@ class BalsamExporter:
                 #else:
 
 
+                #if hosts_property_animation:
+                #    lines.insert(1, f"{I(d+1)}id: {nid}")
+
                 # Object children belong to this particular instance, not to
                 # its shared collection component. Append after choosing the
                 # final Node/component block so they cannot be discarded.
@@ -1064,7 +1141,7 @@ class BalsamExporter:
             if len(lines) > 0:
                 blocks.append("\n".join(lines))
 
-        return wrap_never_mirror(blocks, d, obj.name, frames)
+        return wrap_never_mirror(blocks, d, obj.name, frames, self.with_object_name)
 
     def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
         if render_objects is None:
@@ -1107,6 +1184,9 @@ class BalsamExporter:
 
         # ── Assemble QML ──────────────────────────────────────────
         imports = ["import QtQuick", "import QtQuick3D"]
+        if self.uses_spatial_audio:
+            imports.append("import QtQuick3D.SpatialAudio")
+
         if self.uses_physics:
             imports.append("import QtQuick3D.Physics")
 
@@ -1123,7 +1203,9 @@ class BalsamExporter:
         qml = f'// {stem}.qml\n' + '\n'.join(imports)
         qml += f"\n\n// Qt Quick 3D — exported by Blender Qt qml Exporter\n"
         qml += f"// Native .mesh files — no balsam conversion step required\n\n"
-        qml += f"Node {{\n    id: root\n    objectName: '{stem}'"
+        qml += "Node {\n    id: root"
+        if self.with_object_name:
+            qml += f"\n    objectName: '{stem}'"
         # if self.s.convert_coords:
         #    qml += f"\n    scale: Qt.vector3d(100., 100., 100.)"
 
@@ -1174,6 +1256,7 @@ class BalsamExporter:
                      sorted(self.component_files) +
                      list(meshes_sources_) +
                      list(self.exp_images.values()) +
+                     list(self.exp_sounds.values()) +
                      shipmate_material_files)
         qrc = ['<RCC>', '    <qresource prefix="/">']
         for f in sorted(set(all_files)):
@@ -1195,7 +1278,7 @@ class BalsamExporter:
         # ── Manifest ──────────────────────────────────────────────
         (self.root / "export_manifest.json").write_text(json.dumps({
             "scene": scene.name, "qml": self.qml_path.name,
-            "meshes": meshes_sources_, "images": self.exp_images,
+            "meshes": meshes_sources_, "images": self.exp_images, "sounds": sorted(self.exp_sounds.values()),
             "materials": [mid for mid, _ in self.exp_materials.values()],
         }, indent=2), encoding='utf-8')
 
@@ -1215,6 +1298,10 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
 
     filepath:    bpy.props.StringProperty(subtype='FILE_PATH')
     filter_glob: bpy.props.StringProperty(default="*.qml", options={'HIDDEN'})
+
+    with_object_name: bpy.props.BoolProperty(
+        name="Object Names", default=True,
+        description="Include objectName properties on exported nodes, materials and Shipmate objects")
 
     export_cameras: bpy.props.BoolProperty(
         name="Cameras", default=False,
@@ -1260,6 +1347,7 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
         b.prop(self, "export_cameras")
         b.prop(self, "export_lights")
         b.prop(self, "export_animations")
+        b.prop(self, "with_object_name")
         b2 = lo.box()
         b2.label(text="Mesh", icon='MESH_DATA')
         b2.prop(self, "apply_modifiers")

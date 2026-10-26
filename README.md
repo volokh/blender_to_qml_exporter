@@ -343,3 +343,98 @@ Regression test (factory startup does not open or modify your working blend):
 
 The bundled [LICENSE](LICENSE) contains the **GNU General Public License,
 version 3**. Consult that file for the license terms.
+
+
+### Rheostat and hatch movement sounds
+
+The QML Rheostat panel has an optional **Sequential Mode** checkbox (`sequentialMode`,
+false by default). When enabled, the generated control waits for each physical position
+before accepting the next scroll step.
+
+Both QML Rheostat and QML Hatch panels have **Step Sound** (`stepSound`). Leave it empty
+to export the original silent control. A filled value generates a `SpatialSound` that
+loops only during the movement animation and stops when movement ends or the control
+is destroyed. Existing output/validator handlers are preserved.
+
+Use a QRC URL such as `qrc:/sounds/lever.wav`, a URL relative to the generated QML, or a
+local audio file. Blender-relative `//` paths and absolute file paths become file URLs;
+local files are referenced, not copied into the export. Ensure QRC sounds are included
+in your application resources. SpatialAudio imports are added only when used.
+
+Sound follows the exported control's node `scenePosition` and `sceneRotation`, including
+rigid-body hatch nodes. World pose is used so scaled parents do not transform audio twice.
+Existing markers expose the new fields without recreating their Blender objects.
+
+
+### Blender Speaker objects
+
+Native Blender `SPEAKER` objects now export as `SpatialSound`, without a Qml marker.
+The speaker's Node retains its parent, local position, rotation and scale; the sound
+tracks its world pose separately so parent transforms are applied once. Speaker children,
+collection instances and render visibility use the ordinary scene export rules.
+
+Speakers use Qt's native `SpatialSound.Logarithmic` attenuation; no manual JavaScript
+attenuation is generated. `size` comes from Blender reference distance and the Node's
+world scale. Finite maximum distance becomes the hard cutoff; Blender's unbounded
+default uses 100 times the source size. Both distances are in exported world units.
+Blender rolloff, volume limits and cone values remain metadata, not custom attenuation.
+
+Speaker audio files (including packed sounds) are copied into `sounds/`, deduplicated,
+and included in the generated QRC, CMake resource list and export manifest. Empty speakers
+still export and can receive a source at runtime. Missing files produce an export warning.
+
+Optional custom properties on a Speaker: `autoPlay` (default true) and `loops` (default 1;
+use -1 for continuous ambience). These are runtime defaults, not Blender NLA scheduling.
+Qt SpatialSound has no pitch property: Blender pitch is retained as `blenderPitch`, with
+a warning when it is not 1. NLA audio strip timing is not exported and produces a warning.
+Location/rotation animation can use the exported speaker Node like other scene objects.
+
+A Speaker may define a string custom property `controller` containing a QML expression,
+for example `root.engineController`. The exported sound declares
+`property var controller: root.engineController` and listens for `soundChanged`.
+The controller's `sound` value supplies `play` (boolean) and `volume` (intensity 0–1).
+Initial state and controller replacement are synchronized too; changing volume while
+playing does not restart the sound. Replace `sound` or emit `soundChanged` when its
+fields change. Without a controller, the existing playback defaults apply.
+
+A controller can also be the sound QObject itself (for example
+`cubicleModel_.motorSound`), exposing `play` and `volume` directly. The exporter listens
+to its `playChanged` and `volumeChanged` signals, including when supplied as
+`controller.sound`. Controller-driven sounds disable autoplay and synchronize on load.
+
+### Qml.PropertyAnimation
+
+Choose **Add → Shipmate → Qml.PropertyAnimation**, then parent the marker to the mesh
+or Empty you want to animate. Edit it in **Object Properties → QML Property Animation**.
+The implementation lives in `shipmate/qt_property_animation.py`.
+
+- `property` / `properties`: property name or comma-separated names (quoted in QML).
+- `duration`, `from`, `to`: raw QML expression strings; no quotes are added.
+  For example, `control_.duration` or `Qt.vector3d(target.eulerRotation.x, target.eulerRotation.y, 360.)`.
+- Easing dropdown: all Qt Quick easing types, plus amplitude, overshoot, period and
+  an optional raw Bezier curve list such as `[0.25, 0.1, 0.25, 1, 1, 1]`.
+- `loops`: -1 exports `Animation.Infinite`; other values export as numbers.
+- `running`: exports a boolean; default false.
+
+The generated `LM.PropertyAnimation` always uses `target: parent`. Since Qt animations
+do not expose a parent property, a readonly `parent` reference explicitly identifies
+the Blender parent; only scene objects hosting an animation receive an extra QML ID.
+An unparented marker targets the exported component root. QML expressions are passed
+through unchanged and must refer to identifiers available in the receiving component.
+
+### Optional object names
+
+**Include → Object Names** is enabled by default. Disable it to omit every generated
+`objectName` declaration, including scene roots, collection components, materials,
+never-mirror wrappers, sounds and Shipmate controls. QML IDs and property bindings
+remain intact; raw QML expressions are not rewritten.
+
+Python operator usage:
+
+```python
+bpy.ops.export_scene.qt_balsam(filepath="/path/to/Scene.qml", with_object_name=False)
+```
+
+For direct exporter use, set `settings.with_object_name = False` or pass
+`BalsamExporter(filepath, settings, with_object_name=False)`. Missing settings keep
+the default enabled behavior.

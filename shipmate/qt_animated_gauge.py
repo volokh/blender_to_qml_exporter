@@ -241,12 +241,12 @@ def qt_pos(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def export_qml_animated_gauge(obj, nid, d):
+def export_qml_animated_gauge(obj, nid, d, with_object_name=True):
     value_ = qml_animated_gauge_value(obj)
     input_value_ = qml_animated_gauge_input_value(obj)
     lines = [f'{I(d)}LM.AnimatedGauge {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d+1)}objectName: '{obj.name}'",
+             f"{I(d+1)}objectName: '{obj.name}'" if with_object_name else "",
              f'{I(d+1)}node: parent',
              f'{I(d+1)}minValue: {value_[0]}',
              f'{I(d+1)}maxValue: {value_[2]}',
