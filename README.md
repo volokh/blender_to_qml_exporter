@@ -1,3 +1,10 @@
+<a href="https://buymeacoffee.com/konvol" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174">
+</a>
+<a href="https://www.paypal.com/donate/?hosted_button_id=5HG4V7UA7EP6U" target="_blank">
+  <img src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif" alt="PayPal">
+</a>
+
 # Qt Quick 3D Balsam Exporter — Blender add-on
 
 Export Blender scenes to QML and native Qt Quick 3D `.mesh` files, and import
