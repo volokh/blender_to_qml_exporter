@@ -4,10 +4,12 @@ from bpy.props import (
     FloatProperty, IntProperty
 )
 from bpy_extras.io_utils import ExportHelper, ImportHelper
-from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name, transform_collision_mesh
+from .qt_mesh_writer import write_mesh_file, extract_mesh_data, material_id_for_name, transform_collision_mesh, manual_lod_sources, custom_lod_distances_value
 from .qt_cloth import cloth_modifier, rest_cloth_mesh, cloth_metadata
 from .qt_mesh_importer import QtMeshImportError, import_qt_mesh_file
 from .qt_mesh_validate import validate_qt_mesh
+from .qt_simplifier import MAX_LOD_LEVEL
+from .qt_lod_settings import active_lod_settings, lod_settings_register, lod_settings_unregister
 from .qt_bsdf_mat_importer import mat_to_quick3d
 from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate
 from .shipmate.qt_step_sound import export_speaker
@@ -25,12 +27,6 @@ import hashlib
 from mathutils import Matrix
 
 MESH_EXPORT_OBJECT_TYPES = {'MESH', 'CURVE', 'SURFACE', 'FONT'}
-LOD_LEVELS = (
-    {"level": 1, "ratio": 0.55, "distance": .05},
-    {"level": 2, "ratio": 0.25, "distance": 0.10},
-    {"level": 3, "ratio": 0.08, "distance": 1.0},
-    {"level": 4, "ratio": None, "distance": 10.0},
-)
 
 bl_info = {
     "name": "Qt Quick 3D Balsam Exporter Plugin",
@@ -117,6 +113,7 @@ def _u16(v): return struct.pack(LE + 'H', int(v))
 def _u64(v): return struct.pack(LE + 'Q', int(v))
 def _f32(v): return struct.pack(LE + 'f', float(v))
 def _utf16(s): return s.encode('utf-16le')
+def uses_logic_module(text): return re.search(r'\bLM\.', text) is not None
 
 
 AXIS_FIX = Matrix((
@@ -669,8 +666,39 @@ class BalsamExporter:
         self.exp_materials[key] = (key, definition(key))
         return key
 
-    def extract_and_write_mesh(self, obj, filepath, lod_specs=None):
-        lod_label = " with embedded LODs" if lod_specs else ""
+    def _manual_lods(self, obj):
+        """Return enabled per-object manual LOD sources."""
+        if not getattr(self.s, 'manual_lods', False):
+            return []
+        sources, problems = manual_lod_sources(obj)
+        for problem in problems:
+            self.s.report({"WARNING"}, problem)
+        return [{'level': level, 'source': source}
+                for level, source in sorted(sources.items())]
+
+    def _generated_lod_limit(self, obj):
+        if not self.s.generate_lods:
+            return None
+        limit = self.s.generate_lod_count
+        settings = active_lod_settings(obj) if getattr(self.s, 'manual_lods', False) else None
+        if settings is not None and settings.use_max:
+            return min(settings.max_levels, limit)
+        return limit
+
+    def _lod_options(self):
+        """LOD normal recalculation settings (recalculateLodNormals and its angles)."""
+        return {
+            'recalculate_normals': getattr(self.s, 'recalculate_lod_normals', False),
+            'merge_angle': getattr(self.s, 'recalculate_lod_normals_merge_angle', 60.0),
+            'split_angle': getattr(self.s, 'recalculate_lod_normals_split_angle', 25.0),
+            'custom_distances': bool(getattr(self.s, 'manual_lods', False)),
+            'vertex_caps': bool(getattr(self.s, 'lod_vertex_caps', False)),
+            'distance_scale': float(getattr(self.s, 'custom_distance_scale', 1.0)),
+            'camera_ranges': bool(getattr(self.s, 'lod_camera_ranges', True)),
+        }
+
+    def extract_and_write_mesh(self, obj, filepath, lod_specs=None, manual_lods=None, lod_options=None):
+        lod_label = " with embedded LODs" if lod_specs or manual_lods else ""
         self.s.report(
             {"INFO"}, f"Exporting obj: '{obj.name}', mesh: '{obj.data.name}'{lod_label} → '{filepath}' …")
         # safe = sanitize(obj.data.name)
@@ -682,10 +710,16 @@ class BalsamExporter:
                     apply_modifiers=self.s.apply_modifiers,
                     convert_coords=self.s.convert_coords,
                     lod_specs=lod_specs,
+                    manual_lods=manual_lods,
+                    lod_options=lod_options,
+                    export_tangents=getattr(self.s, 'export_tangents', False),
                 )
         except Exception as exc:
             self.s.report({"ERROR"}, f"Failed to extract '{obj.name}': {exc}")
             return {'result': False}
+
+        for warning in mesh_data_.get('manual_lod_warnings', []):
+            self.s.report({"WARNING"}, f"'{obj.name}': {warning}")
 
         if mesh_data_["vertex_count"] == 0:
             self.s.report(
@@ -824,7 +858,9 @@ class BalsamExporter:
             # geometry. Distinct objects with modifiers may require different
             # meshes even when they use the same Blender mesh datablock.
             modified = self.s.apply_modifiers and obj.is_modified(bpy.context.scene, 'RENDER')
-            owner = obj if cloth or modified or obj.type != 'MESH' else obj.data
+            panel_active = bool(getattr(self.s, 'manual_lods', False) and active_lod_settings(obj))
+            owner = obj if cloth or modified or obj.type != 'MESH' or panel_active else obj.data
+            generated_limit = self._generated_lod_limit(obj) if not cloth else None
             base_key = (obj.type, library_name_, export_data_name_)
             previous = self.mesh_name_owners.setdefault(base_key, owner)
             if previous != owner:
@@ -832,11 +868,18 @@ class BalsamExporter:
                 suffix = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
                 export_data_name_ += f'_{suffix}'
 
-            mesh_key_ = f"{obj.type}/LOD/{library_name_}/{export_data_name_}" if self.s.generate_lods and library_name_ != '' else (
-                f"{obj.type}/LOD/{export_data_name_}" if self.s.generate_lods else (
-                    f"{obj.type}/{library_name_}/{export_data_name_}" if library_name_ != '' else f'{obj.type}/{export_data_name_}'
+            if generated_limit is not None and generated_limit != self.s.generate_lod_count:
+                export_data_name_ += f'_genlod{generated_limit}'
+
+            manual_lods_ = self._manual_lods(obj) if not cloth else []
+            if manual_lods_:
+                mesh_key_ = f"{obj.type}/MLOD/{library_name_}/{export_data_name_}"
+            else:
+                mesh_key_ = f"{obj.type}/LOD/{library_name_}/{export_data_name_}" if generated_limit and library_name_ != '' else (
+                    f"{obj.type}/LOD/{export_data_name_}" if generated_limit else (
+                        f"{obj.type}/{library_name_}/{export_data_name_}" if library_name_ != '' else f'{obj.type}/{export_data_name_}'
+                    )
                 )
-            )
 
             if cloth:
                 mesh_key_ += '/CLOTH'
@@ -848,29 +891,54 @@ class BalsamExporter:
                     lib_dir = self.mesh_dir / library_name_
                     lib_dir.mkdir(parents=False, exist_ok=True)
 
-                safe_data_name_ = sanitize(
-                    f"{export_data_name_}_LODs" if self.s.generate_lods and not cloth else export_data_name_)
+                if manual_lods_:
+                    data_name_suffixed_ = f"{export_data_name_}_MLODs"
+                elif generated_limit:
+                    data_name_suffixed_ = f"{export_data_name_}_LODs"
+                else:
+                    data_name_suffixed_ = export_data_name_
+                if self.s.manual_lods and not manual_lods_ and not generated_limit \
+                        and custom_lod_distances_value(obj) is not None:
+                    self.s.report({"WARNING"}, f"'{obj.name}': LOD distance overrides ignored; no LOD levels "
+                                               f"to attach them to (select LOD objects or enable LOD generation)")
+                safe_data_name_ = sanitize(data_name_suffixed_)
                 mp = self.mesh_dir / library_name_ / f"{safe_data_name_}.mesh"
                 source_ = f"meshes/{library_name_}/{safe_data_name_}.mesh" if library_name_ != '' else f"meshes/{safe_data_name_}.mesh"
                 result_ = self.extract_and_write_mesh(
-                    obj, str(mp), LOD_LEVELS if self.s.generate_lods and not cloth else None)
+                    obj, str(mp),
+                    generated_limit,
+                    manual_lods=manual_lods_ or None,
+                    lod_options=self._lod_options())
                 if not result_['result']:
                     return blocks
 
                 self.exp_meshes[mesh_key_] = {
-                    'source': source_, 'material_names': result_['material_names'], 'cloth': result_.get('cloth')}
+                    'source': source_, 'material_names': result_['material_names'],
+                    'material_slot_indices': result_.get('material_slot_indices', []),
+                    'cloth': result_.get('cloth')}
 
             mesh_ = self.exp_meshes[mesh_key_]
-            mat_ids_ = [mat_name_ for mat_name_ in mesh_['material_names']]
-
-            # Mesh subset ordering stays unchanged; only the material bindings
-            # are remapped to this instance's mirror variant.
+            # Bind materials per object, using each subset's mesh slot index.
+            # This preserves one shared .mesh while supporting object-linked
+            # material overrides on objects that share the mesh datablock.
+            slot_indices = mesh_.get('material_slot_indices', [])
             material_variants = {}
-            for slot in obj.material_slots:
-                if slot.material and material_id_for_name(slot.material) in mat_ids_:
-                    base_id = material_id_for_name(slot.material)
-                    material_variants[base_id] = self._ensure_flag_mat(slot.material, mesh_['cloth'], obj) if cloth else self._ensure_mat(slot.material, mirror_info)
-            mat_ids_ = [material_variants.get(mid, mid) for mid in mat_ids_]
+            if slot_indices:
+                mat_ids_ = []
+                for slot_index in slot_indices:
+                    mat = obj.material_slots[slot_index].material if slot_index < len(obj.material_slots) else None
+                    material_id_ = (self._ensure_flag_mat(mat, mesh_['cloth'], obj)
+                                    if cloth else self._ensure_mat(mat, mirror_info))
+                    mat_ids_.append(material_id_ or 'DefaultMaterial')
+            else:
+                # Backward compatibility for cached metadata created before
+                # subset slot indices were recorded.
+                mat_ids_ = [mat_name_ for mat_name_ in mesh_['material_names']]
+                for slot in obj.material_slots:
+                    if slot.material and material_id_for_name(slot.material) in mat_ids_:
+                        base_id = material_id_for_name(slot.material)
+                        material_variants[base_id] = self._ensure_flag_mat(slot.material, mesh_['cloth'], obj) if cloth else self._ensure_mat(slot.material, mirror_info)
+                mat_ids_ = [material_variants.get(mid, mid) for mid in mat_ids_]
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
             rigid_body_ = get_rigid_body(obj)
@@ -1091,7 +1159,7 @@ class BalsamExporter:
                                       'import QtQuick3D',
                                       'import QtQuick3D.SpatialAudio' if any('LM.SpatialSound {' in block for block in data_) else '',
                                       'import QtQuick3D.Physics' if self.uses_physics else '',
-                                      'import LogicModule as LM',
+                                      'import LogicModule as LM' if uses_logic_module("\n".join(data_)) else '',
                                       'import "."',
                                       '',
                                       f'{I(tabs_)}Node {{']
@@ -1190,15 +1258,19 @@ class BalsamExporter:
         if self.uses_physics:
             imports.append("import QtQuick3D.Physics")
 
-        imports += ["", 'import LogicModule as LM', 'import "."']
-        if self.s.export_animations:
-            imports.append("import QtQuick.Timeline")
-
         mat_section = ""
         for name, (mid, mq) in self.exp_materials.items():
             reindented = "\n".join(("    " + l if l.strip() else l)
                                    for l in mq.split("\n"))
             mat_section += reindented + "\n\n"
+
+        scene_body = mat_section + "\n".join(node_blocks) + "\n".join(self.static_collision_blocks) + anim
+        imports += [""]
+        if uses_logic_module(scene_body):
+            imports.append('import LogicModule as LM')
+        imports.append('import "."')
+        if self.s.export_animations:
+            imports.append("import QtQuick.Timeline")
 
         qml = f'// {stem}.qml\n' + '\n'.join(imports)
         qml += f"\n\n// Qt Quick 3D — exported by Blender Qt qml Exporter\n"
@@ -1315,9 +1387,42 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
     apply_modifiers: bpy.props.BoolProperty(
         name="Apply Modifiers", default=True,
         description="Apply mesh modifiers before exporting geometry")
+    export_tangents: bpy.props.BoolProperty(
+        name="Tangents and Binormals", default=False,
+        description="Export tangent and binormal vertex attributes for tangent-space materials")
+    manual_lods: bpy.props.BoolProperty(
+        name="Manual LODs", default=False,
+        description="Use enabled per-object Qt Quick 3D LOD panel overrides")
     generate_lods: bpy.props.BoolProperty(
         name="Generate LODs", default=False,
-        description="Embed LOD1-LOD3 index-only ranges using the original mesh vertices")
+        description="Generate LOD1-LOD7 index-only simplifications of the original mesh vertices. "
+                    "With Manual LODs on, only levels without a manual LOD object are generated")
+    generate_lod_count: bpy.props.IntProperty(
+        name="LOD Levels", default=7, min=1, max=MAX_LOD_LEVEL,
+        description="Highest generated LOD level. Lower values stop earlier, for small objects")
+    lod_vertex_caps: bpy.props.BoolProperty(
+        name="Keep Vertex Caps", default=False,
+        description="Generated levels halve the LOD0 vertex count and stop at 20 vertices; each level's "
+                    "index target is searched to fit its cap (slower than Qt's level loop)")
+    lod_camera_ranges: bpy.props.BoolProperty(
+        name="Camera Distance LODs", default=False,
+        description="Estimate LOD transitions at fixed camera distances for a 60-degree vertical FOV, "
+                    "1080-pixel viewport, unit model scale and unit LOD biases. Disable for legacy distances")
+    custom_distance_scale: bpy.props.FloatProperty(
+        name="Distance Scale", default=1.0, min=1e-6, precision=3,
+        description="Every exported LOD distance is divided by this value (100 makes them 100 times smaller)")
+    recalculate_lod_normals: bpy.props.BoolProperty(
+        name="Recalculate LOD Normals", default=False,
+        description="Recalculate the normals of generated LODs (recalculateLodNormals). "
+                    "Vertices whose normal changes beyond the split angle are duplicated")
+    recalculate_lod_normals_merge_angle: bpy.props.FloatProperty(
+        name="Merge Angle", default=60.0, min=0.0, max=270.0, precision=1,
+        description="Faces closer than this angle (degrees) share a smoothed normal "
+                    "(recalculateLodNormalsMergeAngle)")
+    recalculate_lod_normals_split_angle: bpy.props.FloatProperty(
+        name="Split Angle", default=25.0, min=0.0, max=270.0, precision=1,
+        description="A vertex is split when its LOD normal differs from LOD0 by more than this "
+                    "angle, in degrees (recalculateLodNormalsSplitAngle)")
     selected_only: bpy.props.BoolProperty(
         name="Selected Only", default=False,
         description="Only export currently selected objects")
@@ -1351,7 +1456,18 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
         b2 = lo.box()
         b2.label(text="Mesh", icon='MESH_DATA')
         b2.prop(self, "apply_modifiers")
+        b2.prop(self, "export_tangents")
+        b2.prop(self, "manual_lods")
         b2.prop(self, "generate_lods")
+        if self.generate_lods:
+            b2.prop(self, "generate_lod_count")
+            b2.prop(self, "lod_vertex_caps")
+        b2.prop(self, "lod_camera_ranges")
+        b2.prop(self, "recalculate_lod_normals")
+        if self.recalculate_lod_normals:
+            b2.prop(self, "recalculate_lod_normals_merge_angle")
+            b2.prop(self, "recalculate_lod_normals_split_angle")
+        b2.prop(self, "custom_distance_scale")
         b2.prop(self, "selected_only")
         b2.prop(self, "convert_coords")
 
@@ -1429,6 +1545,7 @@ def menu_func_import(self, context):
 
 
 def register():
+    lod_settings_register()
     bpy.utils.register_class(EXPORT_OT_qt_balsam)
     bpy.utils.register_class(IMPORT_OT_qt_mesh)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
@@ -1444,6 +1561,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
     bpy.utils.unregister_class(IMPORT_OT_qt_mesh)
     bpy.utils.unregister_class(EXPORT_OT_qt_balsam)
+    lod_settings_unregister()
 
 
 if __name__ == "__main__":

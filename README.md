@@ -12,8 +12,9 @@ Qt `.mesh` geometry back into Blender. Despite the name, **exported meshes do
 not need a balsam conversion step**.
 
 This version includes Shipmate-specific material and interactive-object support.
-Generated scenes import `LogicModule as LM`; they are not standalone Qt-only
-assets without that module or corresponding adjustments to the generated QML.
+Generated files import `LogicModule as LM` only when they use `LM.` types (for
+example Shipmate objects, flags, or LM materials). Those files are not standalone
+Qt-only assets without that module or corresponding adjustments to the generated QML.
 
 ## Requirements and installation
 
@@ -47,7 +48,10 @@ beside it.
 | Lights | Off | Export supported point, directional, and spot lights. |
 | Animations | Off | Generate Timeline blocks for object location, Euler rotation, and scale; see limitations below. |
 | Apply Modifiers | On | Export evaluated mesh geometry. |
-| Generate LODs | Off | Embed additional index ranges in `_LODs.mesh` files. |
+| Tangents and Binormals | Off | Export `attr_textan` and `attr_binormal` vertex attributes; enable when materials require a tangent basis, such as normal maps. |
+| Generate LODs | Off | Automatically generate additional index ranges in `_LODs.mesh` files. With **Manual LODs** on, generated levels fill levels without assigned manual objects. |
+| Manual LODs | On | Use enabled per-object settings from the Qt Quick 3D LOD panel; see [Manual LODs](#manual-lods). |
+| Camera Distance LODs | On | Estimate LOD transition distances using fixed camera ranges and reference camera settings; see [LOD camera ranges](#lod-camera-ranges). Disable to use the previous geometry-based values. |
 | Selected Only | Off | Present in the UI, but not currently applied by scene traversal. |
 | Convert Coordinates (Z-up → Y-up) | On | Convert mesh geometry and object transforms to the export coordinate convention. |
 
@@ -69,6 +73,7 @@ bpy.ops.export_scene.qt_balsam(
     export_animations=False,
     apply_modifiers=True,
     generate_lods=False,
+    manual_lods=True,
     convert_coords=True,
 )
 ```
@@ -284,9 +289,22 @@ consistent if a later build or asset-processing step changes their prefix.
 - **Animation:** the optional exporter uses the legacy action F-curve API and
   generated node-ID targets. Some object writers do not emit those IDs. Treat
   Timeline export as experimental, particularly with newer Blender action APIs.
-- **LOD:** levels sample subsets of the original triangles (55%, 25%, 8%), then
-  add an empty terminal range. This is not topology-preserving mesh simplification;
-  inspect results for holes and disappearance before enabling it in production.
+- **LOD:** generated levels (**Generate LODs**) are made like Qt's importer
+  (`qt_simplifier.py`): meshoptimizer's edge collapse on each material subset, with
+  the weld, level targets and normal recalculation of `generateMeshLevelsOfDetail`.
+  **LOD Levels** sets the highest level kept. With **Camera Distance LODs** off,
+  generated level distances use `error × scaleFactor`, in mesh-local units.
+  Qt scales the stored distance by the model scale and `levelOfDetailBias`,
+  so it is not a scene distance. With **Recalculate LOD Normals**
+  off, vertices are welded by position and normal, so flat-shaded meshes may get no levels.
+  Simplification is pure Python and can be slow on large meshes. Inspect results
+  for holes or popping before enabling it in production. Hand-picked LODs are not
+  generated; see [Manual LODs](#manual-lods).
+- **LOD normals:** with **Recalculate LOD Normals**, generated LODs get rebuilt
+  normals like Qt's importer does with `recalculateLodNormals`. **Merge Angle**
+  and **Split Angle** (degrees, 0–270) are `recalculateLodNormalsMergeAngle` and
+  `recalculateLodNormalsSplitAngle`. A vertex whose normal changes past the split
+  angle is duplicated and appended after LOD0's vertices.
 - **Shader graphs:** material selection takes the first encountered Principled
   or Transparent BSDF rather than evaluating every branch of the active output.
   Bake unsupported procedural/mixed shader effects into textures when necessary.
@@ -297,6 +315,103 @@ consistent if a later build or asset-processing step changes their prefix.
   applying both geometry restoration and an extra UV reflection unintentionally.
 - **Re-exporting:** use a dedicated output directory. Generated files are written
   there; obsolete files from earlier exports are not automatically cleaned up.
+
+## Manual LODs
+
+Select a mesh object and open **Properties → Object Constraints → Qt Quick 3D LOD**.
+Enable **LOD Overrides**, then assign mesh objects to the LOD1–LOD7 fields.
+These are per-object exporter settings, not a Blender transform constraint.
+When the panel is disabled or export **Manual LODs** is off, all panel overrides
+are ignored and generation uses the global export settings.
+
+Enable **Override Generated LOD Levels** to cap generation at the lower of
+**Maximum Generated LOD** and global **LOD Levels**. Set it to `0` to disable
+generation for the object. Explicit manual levels above the cap remain available;
+gaps retain previous geometry. An unchecked cap uses the global setting.
+
+By default, LOD distances are calculated from the [camera ranges](#lod-camera-ranges).
+When **Camera Distance LODs** is off, manual levels use the same geometric-error
+distances that automatic simplification of LOD0 would produce. This requires
+running the simplifier even for a manual-only export. If it cannot produce a
+corresponding level for a subset, the exporter uses the same level's distance
+from the largest LOD0 subset (by index count). If that subset also lacks the
+level, it uses the camera range and reports a warning; distances remain
+nondecreasing. To override camera ranges, check individual **Camera Distance
+Overrides** fields and enter camera-to-bounding-box surface depths in scene units.
+Unchecked levels follow the global **Camera Distance LODs** setting. Values are converted to Qt mesh
+distances using the reference camera below.
+If an override or fallback is smaller than the preceding level's depth, it is
+clamped to that depth with a warning, so those levels may switch together.
+**Distance Scale** divides the converted values; its default of 1 preserves the target depths.
+
+The old `mesh_lod1`–`mesh_lod7`, `mesh_lods_max` and `mesh_lods_distances`
+custom properties are no longer read. Existing files must be configured in the
+new panel; mesh datablocks formerly used as LOD sources need mesh objects.
+
+The object's own mesh is LOD0. Each assigned mesh is appended to LOD0's vertex
+buffer in the same `.mesh` file, so Qt Quick 3D switches LODs without loading
+another file. The `.mesh` is named `_MLODs.mesh` when manual LODs are embedded.
+
+- Each LOD triangle keeps the material of the LOD0 subset with the same material
+  slot index. If a level has no triangles for a subset, that subset retains its
+  previous geometry. Trailing missing levels are omitted; gaps before a later
+  level repeat the previous range to preserve Qt's positional LOD numbering.
+  Triangles that use a slot LOD0 does not have are dropped with a warning.
+- The LOD mesh must have the same vertex attributes as LOD0, such as a second UV
+  set (UV1) or vertex colors. A mismatched LOD is skipped with a warning rather
+  than padded.
+- Levels are stored by position, so the exporter writes every level from LOD1 up
+  to the highest one in use. If LOD1 is not set but LOD2 is, LOD1
+  repeats LOD0's triangles at LOD2's distance, so Qt never picks it early, and LOD2 is
+  the LOD2 mesh. Levels
+  above the highest one in use are not written.
+- Meshes are read in local space and use the **Apply Modifiers** and **Convert
+  Coordinates** options like LOD0. Cloth objects do not get manual LODs.
+- A source that points to the object's own mesh is ignored with a warning.
+- Manual LODs and **Generate LODs** can be used together. Each level uses its
+  LOD object if one is set and valid. Generate LODs fills every other level
+  (LOD1–LOD7). If a manual LOD object is skipped, the
+  generated level for that number is used instead, and a warning is shown.
+- Turning **Manual LODs** off ignores manual meshes and their custom distances.
+  Turning **Generate LODs** off with Manual LODs on keeps only the manual levels.
+
+### LOD camera ranges
+
+The fixed `LOD_CAMERA_RANGES` in `qt_mesh_writer.py` specifies camera-to-subset-bounding-box
+surface depths in scene units: 500, 2,000, 5,000, 10,000, 20,000, 50,000 and 100,000
+for LOD1–LOD7 respectively. These can be adjusted in that array.
+
+For each subset and level, the stored Qt value is estimated as
+`target_surface_depth * 2 * tan(60° / 2) / 1080`.
+This is calibrated for a 60° vertical-FOV perspective camera, a 1080-pixel-high
+renderer viewport, camera and model LOD biases of 1, **Distance Scale** 1,
+unit model scale. Set the camera's
+`clipFar` beyond the desired visible range.
+
+Qt measures depth to the nearest point of the transformed subset's axis-aligned
+bounding box along the camera direction, not Euclidean distance to the object
+origin or to the actual mesh surface. Subset bounds may differ, and
+rotation, non-unit scale, viewport size, FOV, biases, instancing, or a different
+camera used for LOD selection change the transitions. The exporter cannot guarantee
+fixed world-space transitions for differently transformed instances sharing one mesh.
+
+### Checking LOD vertex counts
+
+`qt_mesh_validate.py` prints the vertex and triangle count of LOD0 and of every
+embedded LOD level:
+
+```sh
+python3 qt_mesh_validate.py assets/meshes/Lib/Cube_MLODs.mesh
+```
+
+```text
+mesh 1234: vertex buffer holds 29 vertices
+  LOD0 (main mesh): 16 vertices, 18 triangles
+  LOD1 (distance 0.12): 9 vertices, 8 triangles
+  LOD2 (distance 0.21): 4 vertices, 2 triangles
+```
+
+Use `--json` to print the full parsed structure instead of the summary.
 
 ## Cloth and flags
 

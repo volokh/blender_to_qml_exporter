@@ -13,6 +13,9 @@ MULTI_ENTRY_STRUCT_SIZE = 16
 MESH_HEADER_STRUCT_SIZE = 12
 MESH_STRUCT_SIZE = 56
 SUBSET_STRUCT_SIZE_V6 = 52
+LOD_STRUCT_SIZE = 12
+# QSSGRenderComponentType values for index buffers
+_INDEX_FORMATS = {1: 'B', 3: 'H', 5: 'I', 7: 'Q'}
 
 
 class _OffsetTracker:
@@ -98,7 +101,7 @@ def read_mesh(data, mesh_id, mesh_offset):
     subsetByteSize_ = 0
     for _ in range(subset_count):
         count, idx_off, minx, miny, minz, maxx, maxy, maxz, _name_off, name_len, lm_w, lm_h, lod_count = struct.unpack_from(
-            '<II6fIIIII', data, tracker.offset())
+            '<II6fIIIII', data, subsetByteSize_ + tracker.offset())
         subsets.append({'count': count, 'offset': idx_off, 'boundsMin': [minx, miny, minz], 'boundsMax': [
                        maxx, maxy, maxz], 'nameLength': name_len, 'lightmap': [lm_w, lm_h], 'lodCount': lod_count})
         subsetByteSize_ += SUBSET_STRUCT_SIZE_V6
@@ -114,6 +117,23 @@ def read_mesh(data, mesh_id, mesh_offset):
         s['name'] = raw[:-2].decode('utf-16le',
                                     errors='replace') if name_bytes >= 2 else ''
 
+    # LOD section (v6+): written after subset names, one 12-byte record per subset LOD
+    lod_byte_size = 0
+    lod_base = tracker.offset()
+    for s in subsets:
+        s['lods'] = []
+        for _ in range(s['lodCount']):
+            count, offset, distance = struct.unpack_from('<2If', data, lod_base + lod_byte_size)
+            s['lods'].append({'count': count, 'offset': offset, 'distance': distance})
+            lod_byte_size += LOD_STRUCT_SIZE
+    tracker.aligned_advance(lod_byte_size)
+
+    index_elements = _read_index_buffer(data, index_data_offset, index_data_size, index_component_type)
+    vertex_count = vertex_data_size // stride if stride else 0
+    lod_summary = _summarize_lods(subsets, index_elements)
+    for subset in subsets:
+        subset['levels'] = _summarize_subset_lods(subset, index_elements)
+
     return {
         'meshId': mesh_id, 'meshOffset': mesh_offset,
         'meshHeader': {'fileId': mesh_file_id, 'fileVersion': mesh_file_version, 'flags': mesh_flags, 'sizeInBytes': mesh_size},
@@ -122,7 +142,102 @@ def read_mesh(data, mesh_id, mesh_offset):
                  'drawMode': draw_mode, 'winding': winding, 'vertexDataOffset': vertex_data_offset, 'indexDataOffset': index_data_offset},
         'attributes': entries,
         'subsets': subsets,
+        'vertexBufferVertices': vertex_count,
+        'lods': lod_summary,
     }
+
+
+def _read_index_buffer(data, offset, size, component_type):
+    fmt = _INDEX_FORMATS.get(component_type)
+    if fmt is None:
+        raise ValueError(f'unsupported index component type: {component_type}')
+    count = size // struct.calcsize('<' + fmt)
+    return list(struct.unpack_from(f'<{count}{fmt}', data, offset))
+
+
+def _summarize_lods(subsets, index_elements):
+    """
+    Level 0 is the main mesh (subset index ranges). Level N uses each subset's N-th
+    LOD range, or its last available range if it has fewer levels. A level's vertex
+    count is the number of distinct vertices its index ranges reference.
+    """
+    level_count = max((len(s['lods']) for s in subsets), default=0)
+    summary = []
+    for level in range(level_count + 1):
+        ranges = []
+        distance = None
+        for s in subsets:
+            if level == 0 or not s['lods']:
+                ranges.append((s['offset'], s['count']))
+            else:
+                lod = s['lods'][min(level, len(s['lods'])) - 1]
+                ranges.append((lod['offset'], lod['count']))
+                if level <= len(s['lods']) and distance is None:
+                    distance = lod['distance']
+
+        used = set()
+        index_count = 0
+        for offset, count in ranges:
+            if count == 0:
+                continue
+            if offset + count > len(index_elements):
+                raise ValueError(f'LOD{level} index range {offset}+{count} exceeds index buffer '
+                                 f'({len(index_elements)} indices)')
+            used.update(index_elements[offset:offset + count])
+            index_count += count
+
+        summary.append({
+            'level': level,
+            'distance': distance,
+            'vertices': len(used),
+            'triangles': index_count // 3,
+            'indexCount': index_count,
+        })
+    return summary
+
+
+def _summarize_subset_lods(subset, index_elements):
+    """LOD levels of one subset, LOD0 first; each level is its own index range."""
+    levels = [_level_stats(0, [(subset['offset'], subset['count'])], None, index_elements)]
+    for number, lod in enumerate(subset['lods'], start=1):
+        levels.append(_level_stats(number, [(lod['offset'], lod['count'])], lod['distance'], index_elements))
+    return levels
+
+
+def _level_stats(level, ranges, distance, index_elements):
+    used = set()
+    index_count = 0
+    for offset, count in ranges:
+        if count == 0:
+            continue
+        if offset + count > len(index_elements):
+            raise ValueError(f'LOD{level} index range {offset}+{count} exceeds index buffer '
+                             f'({len(index_elements)} indices)')
+        used.update(index_elements[offset:offset + count])
+        index_count += count
+    return {'level': level, 'distance': distance, 'vertices': len(used),
+            'triangles': index_count // 3, 'indexCount': index_count}
+
+
+def _format_level(lod, indent):
+    if lod['level'] == 0:
+        label = 'LOD0 (main mesh)'
+    else:
+        label = f"LOD{lod['level']} (distance {lod['distance']:g})"
+    return f"{indent}{label}: {lod['vertices']} vertices, {lod['triangles']} triangles"
+
+
+def format_lod_summary(report):
+    lines = []
+    for mesh in report['meshes']:
+        lines.append(f"mesh {mesh['meshId']}: vertex buffer holds {mesh['vertexBufferVertices']} vertices")
+        if len(mesh['subsets']) <= 1:
+            lines.extend(_format_level(lod, '  ') for lod in mesh['lods'])
+            continue
+        for index, subset in enumerate(mesh['subsets'], start=1):
+            lines.append(f"  subset {index}:")
+            lines.extend(_format_level(lod, '    ') for lod in subset['levels'])
+    return '\n'.join(lines)
 
 
 def validate_qt_mesh(path):
@@ -167,8 +282,14 @@ def main():
     ap = argparse.ArgumentParser(
         description='Validate and inspect a Qt Quick 3D .mesh file')
     ap.add_argument('mesh_file')
+    ap.add_argument('--json', action='store_true',
+                    help='print the full parsed structure as JSON instead of the LOD summary')
     args = ap.parse_args()
-    print(json.dumps(validate_qt_mesh(args.mesh_file), indent=2))
+    report = validate_qt_mesh(args.mesh_file)
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(format_lod_summary(report))
 
 
 if __name__ == '__main__':
