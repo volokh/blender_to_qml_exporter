@@ -695,6 +695,7 @@ class BalsamExporter:
             'vertex_caps': bool(getattr(self.s, 'lod_vertex_caps', False)),
             'distance_scale': float(getattr(self.s, 'custom_distance_scale', 1.0)),
             'camera_ranges': bool(getattr(self.s, 'lod_camera_ranges', True)),
+            'use_meshoptimizer': bool(getattr(self.s, 'use_meshoptimizer', False)),
         }
 
     def extract_and_write_mesh(self, obj, filepath, lod_specs=None, manual_lods=None, lod_options=None):
@@ -1008,7 +1009,7 @@ class BalsamExporter:
             '''if baked_static:
                 self.uses_physics = True
                 collision_source = self._static_collision_mesh(obj, mesh_['source'], exported_world)
-                shape = 'TriangleMeshShape' if rigid_body_.collision_shape == 'MESH' else 'ConvexMeshShape'
+                shape = 'LM.TriangleMeshShape' if rigid_body_.collision_shape == 'MESH' else 'LM.ConvexMeshShape'
                 collision_lines = [
                     f'{I(d)}StaticRigidBody {{',
                     f'{I(d+1)}objectName: "{obj.name}_collision"' if self.with_object_name else "",
@@ -1056,10 +1057,10 @@ class BalsamExporter:
                     if rigid_body.collision_shape == 'CAPSULE':
                         lines_.extend([f"{I(d+1)}collisionShapes: CapsuleShape {{"])
                     if rigid_body.collision_shape == 'CONVEX_HULL':
-                        lines_.extend([f"{I(d+1)}collisionShapes: ConvexMeshShape {{",
+                        lines_.extend([f"{I(d+1)}collisionShapes: LM.ConvexMeshShape {{",
                                        f'{I(d+2)}source: "{collision_source_}"'])
                     if rigid_body.collision_shape == 'MESH':
-                        lines_.extend([f"{I(d+1)}collisionShapes: TriangleMeshShape {{",
+                        lines_.extend([f"{I(d+1)}collisionShapes: LM.TriangleMeshShape {{",
                                        f'{I(d+2)}source: "{collision_source_}"'])
 
                     lines_.extend([
@@ -1400,6 +1401,9 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
     generate_lod_count: bpy.props.IntProperty(
         name="LOD Levels", default=7, min=1, max=MAX_LOD_LEVEL,
         description="Highest generated LOD level. Lower values stop earlier, for small objects")
+    use_meshoptimizer: bpy.props.BoolProperty(
+        name="Use meshoptimizer", default=False,
+        description="Generate LODs with the optional meshoptimizer Python bindings instead of the built-in simplifier")
     lod_vertex_caps: bpy.props.BoolProperty(
         name="Keep Vertex Caps", default=False,
         description="Generated levels halve the LOD0 vertex count and stop at 20 vertices; each level's "
@@ -1461,8 +1465,14 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
         b2.prop(self, "generate_lods")
         if self.generate_lods:
             b2.prop(self, "generate_lod_count")
-            b2.prop(self, "lod_vertex_caps")
-        b2.prop(self, "lod_camera_ranges")
+            b2.prop(self, "use_meshoptimizer")
+            if not self.use_meshoptimizer:
+                b2.prop(self, "lod_vertex_caps")
+        camera_row = b2.row()
+        camera_row.enabled = not (self.generate_lods and self.use_meshoptimizer)
+        camera_row.prop(self, "lod_camera_ranges")
+        if self.generate_lods and self.use_meshoptimizer:
+            b2.label(text="meshoptimizer uses camera distance ranges", icon='INFO')
         b2.prop(self, "recalculate_lod_normals")
         if self.recalculate_lod_normals:
             b2.prop(self, "recalculate_lod_normals_merge_angle")

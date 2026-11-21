@@ -514,6 +514,25 @@ def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
+def _preserve_winding(positions, normals, flat_indices):
+    """Keep each reduced triangle aligned with its source vertex-normal direction."""
+    if normals is None:
+        return flat_indices
+
+    points = np.asarray(positions, dtype=np.float32)
+    vertex_normals = np.asarray(normals, dtype=np.float32)
+    triangles = np.asarray(flat_indices, dtype=np.int64).reshape(-1, 3)
+    if not len(triangles):
+        return flat_indices
+
+    a, b, c = triangles.T
+    face_normals = np.cross(points[b] - points[a], points[c] - points[a])
+    source_normals = vertex_normals[a] + vertex_normals[b] + vertex_normals[c]
+    flipped = np.einsum("ij,ij->i", face_normals, source_normals) < 0.0
+    triangles[flipped, 1], triangles[flipped, 2] = triangles[flipped, 2].copy(), triangles[flipped, 1].copy()
+    return triangles.reshape(-1).tolist()
+
+
 def recalculate_normals(positions, normals, flat_indices, merge_angle, split_angle, vertex_base, new_vertices):
     """
     Qt's LOD normal correction (generateMeshLevelsOfDetail). Degenerate faces are dropped; a
@@ -583,6 +602,7 @@ def levels_of_detail(all_positions, indices, normals=None, merge_angle=None, spl
         if count == 0 or float(count) >= float(index_count) * 0.75:
             break
         original = [welded_original[v] for v in new_indices]
+        original = _preserve_winding(all_positions, normals, original)
         if recalc:
             original = recalculate_normals(all_positions, normals, original, merge_angle, split_angle,
                                            vertex_base, new_vertices)
@@ -632,6 +652,7 @@ def _capped_levels(all_positions, indices, normals, merge, split, new_vertices, 
     def fit(count_triangles):
         new, error = simplify_edge(welded_indices, welded_positions, 3 * count_triangles)
         original = [welded_original[v] for v in new]
+        original = _preserve_winding(all_positions, normals, original)
         if recalc:
             counted = recalculate_normals(all_positions, normals, original, merge, split, vertex_base, [])
         else:
@@ -660,6 +681,7 @@ def _capped_levels(all_positions, indices, normals, merge, split, new_vertices, 
                 warnings.append(f"LOD{level} cannot reach {cap} vertices; generated levels stop here")
             break
         original, error, _ = best
+        original = _preserve_winding(all_positions, normals, original)
         if recalc:
             original = recalculate_normals(all_positions, normals, original, merge, split, vertex_base, new_vertices)
         lods.append((float(f32(error * scale)), original))
@@ -700,4 +722,78 @@ def build_generated_lods(points, normals, ranges, indices, highest, vertex_base,
     for level in range(1, max((len(lods) for lods in per_subset), default=0) + 1):
         levels[level] = [(lods[level - 1][1], float(lods[level - 1][0])) if level <= len(lods) else None
                          for lods in per_subset]
+    return levels, new_vertices
+
+
+def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_base, angles=None,
+                             capped=False, warnings=None):
+    """Generate LODs with the optional meshoptimizer Python bindings."""
+    try:
+        import meshoptimizer
+        simplify = meshoptimizer.simplify
+        simplify_sloppy = getattr(meshoptimizer, "simplify_sloppy", None)
+    except ImportError as exc:
+        raise RuntimeError(
+            "Use meshoptimizer is enabled, but the meshoptimizer package is not installed in Blender's Python."
+        ) from exc
+
+    positions = np.asarray(points, dtype=np.float32)
+    merge, split = angles if angles is not None else (None, None)
+    new_vertices = []
+    per_subset = []
+
+    for start, count in ranges:
+        source_indices = np.asarray(indices[start:start + count], dtype=np.uint32)
+        if count < 3 or len(np.unique(source_indices)) <= LOD_CAP_STOP:
+            per_subset.append([])
+            continue
+
+        lods = []
+        previous_index_count = len(source_indices)
+        for level in range(1, min(int(highest), MAX_LOD_LEVEL) + 1):
+            # Halving the target triangle ratio at each level keeps the exported LOD chain monotonic.
+            target_index_count = max(3, int(len(source_indices) * (0.5 ** level)))
+            target_index_count -= target_index_count % 3
+            destination = np.empty(len(source_indices), dtype=np.uint32)
+            simplified_count = simplify(
+                destination,
+                source_indices,
+                positions,
+                target_index_count=target_index_count,
+            )
+            flat = destination[:int(simplified_count)].tolist()
+            # meshopt_simplify can stop above its requested target when its error bound
+            # prevents further collapses. For distant LODs, try its faster, less
+            # conservative simplifier before giving up on this subset.
+            target_is_missed = len(flat) > max(3, int(target_index_count * 1.25))
+            if len(flat) >= previous_index_count or target_is_missed:
+                if simplify_sloppy is None:
+                    if len(flat) >= previous_index_count:
+                        break
+                else:
+                    simplified_count = simplify_sloppy(
+                        destination,
+                        source_indices,
+                        positions,
+                        target_index_count=target_index_count,
+                        target_error=1.0,
+                    )
+                    sloppy_flat = destination[:int(simplified_count)].tolist()
+                    if len(sloppy_flat) >= 3 and len(sloppy_flat) < previous_index_count \
+                            and len(sloppy_flat) < len(flat):
+                        flat = sloppy_flat
+            if len(flat) < 3 or len(flat) >= previous_index_count:
+                break
+            flat = _preserve_winding(positions, normals, flat)
+            if angles is not None:
+                flat = recalculate_normals(positions, normals, flat, merge, split, vertex_base, new_vertices)
+            lods.append((flat, 0.0))
+            previous_index_count = len(flat)
+            if len(set(flat)) <= LOD_CAP_STOP:
+                break
+        per_subset.append(lods)
+
+    levels = {}
+    for level in range(1, max((len(lods) for lods in per_subset), default=0) + 1):
+        levels[level] = [lods[level - 1] if level <= len(lods) else None for lods in per_subset]
     return levels, new_vertices

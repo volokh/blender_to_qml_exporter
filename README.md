@@ -50,6 +50,7 @@ beside it.
 | Apply Modifiers | On | Export evaluated mesh geometry. |
 | Tangents and Binormals | Off | Export `attr_textan` and `attr_binormal` vertex attributes; enable when materials require a tangent basis, such as normal maps. |
 | Generate LODs | Off | Automatically generate additional index ranges in `_LODs.mesh` files. With **Manual LODs** on, generated levels fill levels without assigned manual objects. |
+| Use meshoptimizer | Off | Under **Generate LODs**, use the optional `meshoptimizer` Python bindings with a halving triangle-count target per LOD. Install them into Blender's Python environment to use this backend. LOD distances use the camera ranges. |
 | Manual LODs | On | Use enabled per-object settings from the Qt Quick 3D LOD panel; see [Manual LODs](#manual-lods). |
 | Camera Distance LODs | On | Estimate LOD transition distances using fixed camera ranges and reference camera settings; see [LOD camera ranges](#lod-camera-ranges). Disable to use the previous geometry-based values. |
 | Selected Only | Off | Present in the UI, but not currently applied by scene traversal. |
@@ -294,6 +295,11 @@ consistent if a later build or asset-processing step changes their prefix.
   the weld, level targets and normal recalculation of `generateMeshLevelsOfDetail`.
   **LOD Levels** sets the highest level kept. With **Camera Distance LODs** off,
   generated level distances use `error × scaleFactor`, in mesh-local units.
+  Enable **Use meshoptimizer** to select the optional `meshoptimizer` Python
+  bindings instead. It simplifies each material subset to half the preceding
+  triangle-count target per level and uses camera distance ranges for LOD transitions.
+  The package must be installed into Blender's Python environment. This backend
+  does not use **Keep Vertex Caps**.
   Qt scales the stored distance by the model scale and `levelOfDetailBias`,
   so it is not a scene distance. With **Recalculate LOD Normals**
   off, vertices are welded by position and normal, so flat-shaded meshes may get no levels.

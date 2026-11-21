@@ -107,7 +107,12 @@ import bmesh
 import bpy
 import numpy as np
 
-from .qt_simplifier import build_generated_lods, lod_normal_angles, triangles_from_flat
+from .qt_simplifier import (
+    build_generated_lods,
+    build_meshoptimizer_lods,
+    lod_normal_angles,
+    triangles_from_flat,
+)
 from .qt_lod_settings import active_lod_settings
 from bpy.types import Operator
 from bpy.props import (
@@ -802,13 +807,15 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
 
     distance_scale = float((lod_options or {}).get("distance_scale", 1.0))
     custom = _custom_lod_distances(obj, warnings) if (lod_options or {}).get("custom_distances") else None
-    camera_ranges = (lod_options or {}).get("camera_ranges", True)
+    use_meshoptimizer = bool((lod_options or {}).get("use_meshoptimizer"))
+    camera_ranges = bool((lod_options or {}).get("camera_ranges", True) or use_meshoptimizer)
     generated = {}
     if generated_specs:
         angles = lod_normal_angles(lod_options)
         normals = _attribute_array(base, ATTR_NORMAL, 3)
         ranges = [(s["subset_start"], s["icount"]) for s in subsets]
-        generated, new_vertices = build_generated_lods(
+        lod_generator = build_meshoptimizer_lods if use_meshoptimizer else build_generated_lods
+        generated, new_vertices = lod_generator(
             base_points, normals, ranges, base_indices, generated_top, vertex_total, angles,
             capped=bool((lod_options or {}).get("vertex_caps")), warnings=warnings)
         level_data.update({level: entries for level, entries in generated.items() if level not in manual_geometry})
