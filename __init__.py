@@ -742,7 +742,9 @@ class BalsamExporter:
 
         # validate_report_ = validate_qt_mesh(filepath)
         # self.s.report({"INFO"}, f'  Mesh validated: {validate_report_}')
-        return {'material_names': mesh_data_['material_names'], 'result': True,
+        return {'material_names': mesh_data_['material_names'],
+                'material_slot_indices': mesh_data_.get('material_slot_indices', []),
+                'result': True,
                 'cloth': cloth_info}
         # self.exp_meshes[obj.name]['material_names'] = mesh_data_['material_names']
 
