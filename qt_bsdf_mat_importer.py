@@ -1104,9 +1104,9 @@ def mat_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mi
         return default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)
 
     nodes_ = []
-    for node_ in mat.node_tree.nodes:
-        nodes_.append(
-            f'// type: {node_.type}, id_name: {node_.bl_idname}, id_name: {node_.bl_label}')
+    #for node_ in mat.node_tree.nodes:
+    #    nodes_.append(
+    #        f'// type: {node_.type}, id_name: {node_.bl_idname}, id_name: {node_.bl_label}')
 
     for node in mat.node_tree.nodes:
         if node.type == 'BSDF_PRINCIPLED':

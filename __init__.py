@@ -227,6 +227,17 @@ def qml_sanitize(name):
     return ('Col' + out_ if out_ and out_[0] == '_' else out_)
 
 
+def collection_qml_type_name(name):
+    """Convert a Blender collection name to a stable QML component type."""
+    words_ = re.findall(r'[A-Za-z0-9]+', name)
+    type_name_ = ''.join(word_[0].upper() + word_[1:] for word_ in words_)
+    if not type_name_:
+        type_name_ = 'Collection'
+    if type_name_[0].isdigit():
+        type_name_ = f'Col{type_name_}'
+    return type_name_
+
+
 def qt_pos_add(a, b):
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
@@ -608,6 +619,9 @@ class BalsamExporter:
         self.static_collision_blocks = []
         self.mesh_name_owners = {}
         self.component_files = set()
+        self._collection_components = {}
+        self._collection_component_names = {}
+        self._active_collection_materials = []
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
         self.uses_physics = False
@@ -629,6 +643,8 @@ class BalsamExporter:
 
         material_id_ = material_id_for_name(mat) + material_variant_suffix(mirror_info)
         material_key = material_id_
+        if self._active_collection_materials:
+            self._active_collection_materials[-1].add(material_key)
         if material_key not in self.exp_materials:
             q = mat_qml(mat, self.img_dir, self.exp_images, indent=0,
                         material_id=material_id_, mirror_info=mirror_info, with_object_name=self.with_object_name)
@@ -664,6 +680,8 @@ class BalsamExporter:
         if key in self.exp_materials and self.exp_materials[key][1] != definition(key):
             key += '_' + signature
         self.exp_materials[key] = (key, definition(key))
+        if self._active_collection_materials:
+            self._active_collection_materials[-1].add(key)
         return key
 
     def _manual_lods(self, obj):
@@ -1214,7 +1232,94 @@ class BalsamExporter:
 
         return wrap_never_mirror(blocks, d, obj.name, frames, self.with_object_name)
 
-    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
+    def _collection_component_type(self, collection):
+        if collection in self._collection_components:
+            return self._collection_components[collection]['type']
+
+        type_name_ = collection_qml_type_name(collection.name)
+        owner_ = self._collection_component_names.get(type_name_)
+        if owner_ is not None and owner_ != collection:
+            identity_ = f'{collection.library.filepath if collection.library else ""}/{collection.name_full}'
+            digest_ = hashlib.sha256(identity_.encode('utf-8')).hexdigest()[:8]
+            type_name_ = f'{type_name_}_{digest_}'
+
+        self._collection_component_names[type_name_] = collection
+        file_name_ = f'{type_name_}.qml'
+        self._collection_components[collection] = {
+            'collection': collection,
+            'file': file_name_,
+            'type': type_name_,
+            'body': [],
+            'materials': set(),
+            'built': False,
+        }
+        return type_name_
+
+    def _build_collection_component(self, collection, offset=(0, 0, 0), instance_matrix=None,
+                                    export_parent_matrix=None, reference_parent_matrix=None):
+        type_name_ = self._collection_component_type(collection)
+        component_ = self._collection_components[collection]
+        if component_['built']:
+            return type_name_
+
+        component_['built'] = True
+        material_keys_ = set()
+        self._active_collection_materials.append(material_keys_)
+        try:
+            component_['body'] = self.process_collection(
+                collection,
+                tabs=1,
+                offset=offset,
+                instance_matrix=instance_matrix,
+                export_parent_matrix=export_parent_matrix,
+                reference_parent_matrix=reference_parent_matrix,
+                split_local_collections=True,
+            )
+        except Exception:
+            component_['built'] = False
+            raise
+        finally:
+            self._active_collection_materials.pop()
+        component_['materials'] = material_keys_
+        return type_name_
+
+    def _write_collection_components(self):
+        for component_ in self._collection_components.values():
+            body_ = '\n'.join(component_['body'])
+            material_text_ = []
+            for material_key_ in sorted(component_['materials']):
+                material_ = self.exp_materials.get(material_key_)
+                if material_ is not None:
+                    material_text_.append(material_[1])
+
+            material_section_ = '\n\n'.join(
+                '\n'.join(('    ' + line_ if line_.strip() else line_)
+                          for line_ in material_qml_.split('\n'))
+                for material_qml_ in material_text_
+            )
+            content_ = material_section_ + '\n' + body_
+            imports_ = ['import QtQuick', 'import QtQuick3D']
+            if 'SpatialSound {' in content_:
+                imports_.append('import QtQuick3D.SpatialAudio')
+            if any(token_ in content_ for token_ in ('StaticRigidBody {', 'DynamicRigidBody {')):
+                imports_.append('import QtQuick3D.Physics')
+            if uses_logic_module(content_):
+                imports_.append('import LogicModule as LM')
+            imports_.extend(['import "."', ''])
+
+            collection_name_ = component_['collection'].name
+            lines_ = [f'// {component_["file"]}', *imports_, 'Node {', '    id: root']
+            if self.with_object_name:
+                lines_.append(f'    objectName: {json.dumps(collection_name_)}')
+            if material_section_:
+                lines_.extend(['', '    // Materials', material_section_])
+            if body_:
+                lines_.extend(['', body_])
+            lines_.append('}')
+            (self.root / component_['file']).write_text('\n'.join(lines_) + '\n', encoding='utf-8')
+            self.component_files.add(component_['file'])
+
+    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None, reference_parent_matrix=None, split_local_collections=False):
         if render_objects is None:
             render_objects = renderable_collection_objects(collection)
         objs_ = []
@@ -1225,7 +1330,18 @@ class BalsamExporter:
         for child_ in collection.children:
             if not child_.hide_render:
                 objs_.append(f'ch: {child_.name}')
-                node_blocks_.extend(self.process_collection(child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects, reference_parent_matrix=reference_parent_matrix))
+                if split_local_collections and child_.library is None:
+                    component_type_ = self._build_collection_component(
+                        child_, offset=col_offs_, instance_matrix=instance_matrix,
+                        export_parent_matrix=export_parent_matrix,
+                        reference_parent_matrix=reference_parent_matrix)
+                    node_blocks_.append(f'{"    " * tabs}{component_type_} {{}}')
+                else:
+                    node_blocks_.extend(self.process_collection(
+                        child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix,
+                        export_parent_matrix=export_parent_matrix, render_objects=render_objects,
+                        reference_parent_matrix=reference_parent_matrix,
+                        split_local_collections=split_local_collections and child_.library is None))
 
         # self elements in collection
         for obj_ in collection.objects:
@@ -1243,7 +1359,8 @@ class BalsamExporter:
         stem = sanitize(self.qml_path.stem)
 
         # Process all top-level objects
-        node_blocks = self.process_collection(scene.collection)
+        node_blocks = self.process_collection(
+            scene.collection, tabs=1, split_local_collections=True)
 
         # node_blocks = []
         # for obj in [o for o in scene.objects if o.parent is None]:
@@ -1251,7 +1368,7 @@ class BalsamExporter:
 
         # Animation
         anim = anim_qml(scene, self.node_ids,
-                        d=2) if self.s.export_animations else ""
+                        d=1) if self.s.export_animations else ""
 
         # ── Assemble QML ──────────────────────────────────────────
         imports = ["import QtQuick", "import QtQuick3D"]
@@ -1290,12 +1407,13 @@ class BalsamExporter:
             qml += mat_section
 
         qml += "    // ── Scene Nodes ───────────────────────────────────────\n"
-        qml += "    Node {\n"
-        qml += "\n".join(node_blocks)
-        qml += "\n    }\n"
-        # Static collision blocks already use scene-root coordinates.
-        # Nest them directly here instead of reparenting through a property.
-        qml += "\n".join(self.static_collision_blocks) + "\n"
+        if node_blocks:
+            qml += "\n".join(node_blocks) + "\n"
+        # Models and placement-specific collision blocks are direct children
+        # of the scene root, so their exported scene-root coordinates remain
+        # unchanged without an extra wrapper Node.
+        if self.static_collision_blocks:
+            qml += "\n".join(self.static_collision_blocks) + "\n"
 
         if anim:
             qml += "\n\n    // ── Animations ────────────────────────────────────\n"
@@ -1304,6 +1422,7 @@ class BalsamExporter:
         qml += "\n}\n"
 
         self.qml_path.write_text(qml, encoding='utf-8')
+        self._write_collection_components()
 
         shipmate_material_files = []
 
