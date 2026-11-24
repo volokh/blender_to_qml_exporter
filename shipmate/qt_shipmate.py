@@ -3,6 +3,7 @@ from bpy.types import Operator, Menu
 from .qt_hatch import qml_hatch_register, qml_hatch_unregister, is_qml_hatch, export_qml_hatch, OBJECT_OT_add_qml_hatch
 from .qt_rheostat import qml_rheostat_register, qml_rheostat_unregister, is_qml_rheostat, export_qml_rheostat, OBJECT_OT_add_qml_rheostat
 from .qt_animated_gauge import qml_animated_gauge_register, qml_animated_gauge_unregister, is_qml_animated_gauge, export_qml_animated_gauge, OBJECT_OT_add_qml_animated_gauge
+from .qt_hoverable_mat_switcher import qml_hoverable_mat_switcher_register, qml_hoverable_mat_switcher_unregister, is_qml_hoverable_mat_switcher, export_qml_hoverable_mat_switcher, OBJECT_OT_add_qml_hoverable_mat_switcher
 
 from .qt_property_animation import (
     qml_property_animation_register, qml_property_animation_unregister,
@@ -38,6 +39,11 @@ class VIEW3D_MT_shipmate_add(Menu):
             text="Qml.PropertyAnimation",
             icon='ANIM',
         )
+        layout.operator(
+            OBJECT_OT_add_qml_hoverable_mat_switcher.bl_idname,
+            text="Qml.HoverableMatSwitcher",
+            icon='ANIM',
+        )
 
 
 def export_shipmate(obj, nid, data, parent_id = None, with_object_name=True):
@@ -50,7 +56,8 @@ def export_shipmate(obj, nid, data, parent_id = None, with_object_name=True):
         lines_ = export_qml_rheostat(obj, nid, data, with_object_name=with_object_name)
     elif is_qml_animated_gauge(obj):
         lines_ = export_qml_animated_gauge(obj, nid, data, with_object_name=with_object_name)
-
+    elif is_qml_hoverable_mat_switcher(obj):
+        lines_ = export_qml_hoverable_mat_switcher(obj, nid, data)
 
     return lines_;
 
@@ -66,6 +73,7 @@ def shipmate_register():
     qml_rheostat_register()
     qml_animated_gauge_register()
     qml_property_animation_register()
+    qml_hoverable_mat_switcher_register()
     bpy.utils.register_class(VIEW3D_MT_shipmate_add)
     bpy.types.VIEW3D_MT_add.append(draw_shipmate_menu)
 
@@ -73,6 +81,7 @@ def shipmate_register():
 def shipmate_unregister():
     bpy.types.VIEW3D_MT_add.remove(draw_shipmate_menu)
     bpy.utils.unregister_class(VIEW3D_MT_shipmate_add)
+    qml_hoverable_mat_switcher_unregister()
     qml_property_animation_unregister()
     qml_animated_gauge_unregister()
     qml_rheostat_unregister()
