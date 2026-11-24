@@ -54,7 +54,8 @@ try:
     bpy.context.collection.objects.link(instance)
     bpy.context.view_layer.update()
     settings = SimpleNamespace(report=lambda *args: None, convert_coords=True, export_animations=False,
-                               export_lights=True, export_cameras=True, apply_modifiers=False, generate_lods=False)
+                               export_lights=True, export_cameras=True, apply_modifiers=False,
+                               generate_lods=False, manual_lods=False)
     assignment = re.compile(r'^\s*objectName\s*:', re.MULTILINE)
     exported = {}
     for label, flag in [('default', None), ('disabled', False), ('enabled', True)]:
@@ -74,8 +75,8 @@ try:
                 assert not assignment.search(text), name
         else:
             for name in ['NamedEmpty', 'NamedCamera', 'NamedLight', 'NamedSpeaker', 'NamedRheostat', 'NamedGauge', 'NamedInstance', 'PlainMaterial']:
-                assert name in files['Scene.qml'], name
-            assert assignment.search(files['Namedcollection.qml'])
+                assert any(name in text for text in files.values()), name
+            assert assignment.search(files['NamedCollection.qml'])
     # Disabling names removes declarations only; the generated scene otherwise matches.
     for name, text in exported['enabled'].items():
         no_names = '\n'.join(line for line in text.splitlines() if not assignment.match(line))

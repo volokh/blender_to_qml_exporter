@@ -42,6 +42,10 @@ Choose **File → Export → Qt Quick 3D (.qml)** and select a destination such 
 letter. Meshes, images, collection components, and resource helpers are written
 beside it.
 
+Collection component names preserve internal capitalization: `TraficLights`
+exports as `TraficLights.qml` and is referenced as `TraficLights {}`. Local
+collections and collection instances use the same component-name mapping.
+
 | Option | Default | Current behavior |
 | --- | --- | --- |
 | Cameras | Off | Export perspective and orthographic cameras. |
@@ -84,7 +88,7 @@ bpy.ops.export_scene.qt_balsam(
 ```text
 assets/
 ├── MyScene.qml
-├── Collectionname.qml              # reusable collection components, when needed
+├── CollectionName.qml              # reusable collection components, when needed
 ├── MyScene.qrc
 ├── CMakeLists_qt3d_snippet.txt
 ├── export_manifest.json

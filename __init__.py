@@ -221,12 +221,6 @@ def sanitize(name):
     return ('_' + s if s and s[0].isdigit() else s) or '_'
 
 
-def qml_sanitize(name):
-    out_ = sanitize(name).capitalize()
-
-    return ('Col' + out_ if out_ and out_[0] == '_' else out_)
-
-
 def collection_qml_type_name(name):
     """Convert a Blender collection name to a stable QML component type."""
     words_ = re.findall(r'[A-Za-z0-9]+', name)
@@ -1165,7 +1159,7 @@ class BalsamExporter:
                     #write to file
                     tabs_ = 0
                     collection_matrix = exported_world
-                    col_name_ = qml_sanitize(obj.instance_collection.name)
+                    col_name_ = self._collection_component_type(obj.instance_collection)
                     if collection_matrix.to_3x3().determinant() < -1e-6:
                         # A reusable component contains fixed material bindings.
                         # Odd/even instance contexts therefore need separate files.
@@ -1285,6 +1279,8 @@ class BalsamExporter:
 
     def _write_collection_components(self):
         for component_ in self._collection_components.values():
+            if not component_['built']:
+                continue
             body_ = '\n'.join(component_['body'])
             material_text_ = []
             for material_key_ in sorted(component_['materials']):
