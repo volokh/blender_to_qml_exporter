@@ -123,12 +123,15 @@ def read_mesh(data, mesh_id, mesh_offset):
     for s in subsets:
         s['lods'] = []
         for _ in range(s['lodCount']):
-            count, offset, distance = struct.unpack_from('<2If', data, lod_base + lod_byte_size)
-            s['lods'].append({'count': count, 'offset': offset, 'distance': distance})
+            count, offset, distance = struct.unpack_from(
+                '<2If', data, lod_base + lod_byte_size)
+            s['lods'].append(
+                {'count': count, 'offset': offset, 'distance': distance})
             lod_byte_size += LOD_STRUCT_SIZE
     tracker.aligned_advance(lod_byte_size)
 
-    index_elements = _read_index_buffer(data, index_data_offset, index_data_size, index_component_type)
+    index_elements = _read_index_buffer(
+        data, index_data_offset, index_data_size, index_component_type)
     vertex_count = vertex_data_size // stride if stride else 0
     lod_summary = _summarize_lods(subsets, index_elements)
     for subset in subsets:
@@ -198,9 +201,11 @@ def _summarize_lods(subsets, index_elements):
 
 def _summarize_subset_lods(subset, index_elements):
     """LOD levels of one subset, LOD0 first; each level is its own index range."""
-    levels = [_level_stats(0, [(subset['offset'], subset['count'])], None, index_elements)]
+    levels = [_level_stats(
+        0, [(subset['offset'], subset['count'])], None, index_elements)]
     for number, lod in enumerate(subset['lods'], start=1):
-        levels.append(_level_stats(number, [(lod['offset'], lod['count'])], lod['distance'], index_elements))
+        levels.append(_level_stats(
+            number, [(lod['offset'], lod['count'])], lod['distance'], index_elements))
     return levels
 
 
@@ -230,13 +235,15 @@ def _format_level(lod, indent):
 def format_lod_summary(report):
     lines = []
     for mesh in report['meshes']:
-        lines.append(f"mesh {mesh['meshId']}: vertex buffer holds {mesh['vertexBufferVertices']} vertices")
+        lines.append(f"mesh {mesh['meshId']}: vertex buffer holds {
+                     mesh['vertexBufferVertices']} vertices")
         if len(mesh['subsets']) <= 1:
             lines.extend(_format_level(lod, '  ') for lod in mesh['lods'])
             continue
         for index, subset in enumerate(mesh['subsets'], start=1):
             lines.append(f"  subset {index}:")
-            lines.extend(_format_level(lod, '    ') for lod in subset['levels'])
+            lines.extend(_format_level(lod, '    ')
+                         for lod in subset['levels'])
     return '\n'.join(lines)
 
 

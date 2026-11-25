@@ -45,12 +45,14 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     door = bpy.data.objects.new('Door', mesh)
     handle = bpy.data.objects.new('DoorHandle', None)
     handle['qml_type'] = 'Qml.Rheostat'
+    handle['pressure'] = 7.0
     handle.parent = door
     for obj in [door, handle]:
         collection.objects.link(obj)
         obj['closed'] = False
         obj['enabled'] = False
         obj['options'] = {'values': [7, 8], 'label': 'original'}
+        obj['booleans'] = {'libraryOnly': True, 'nested': {'oldFlag': False}}
     nested = bpy.data.collections.new('NestedParts')
     child = bpy.data.objects.new('NestedMember', None)
     nested.objects.link(child)
@@ -62,6 +64,7 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     inner_instance = bpy.data.objects.new('InnerInstance', None)
     inner_instance.instance_type = 'COLLECTION'
     inner_instance.instance_collection = inner_collection
+    inner_instance['localSetting'] = 7
     collection.objects.link(inner_instance)
     source = output / 'library.blend'
     bpy.data.libraries.write(str(source), {collection})
@@ -84,11 +87,19 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
         if value is not None:
             instance['closed'] = value
             instance['options'] = {'values': [1, 2, 3], 'label': name}
+            instance['booleans'] = {'enabled': True, 'flags': [True, False]}
+            instance['cycles'] = {'samples': 16}
             instance['newProperty'] = name
+            instance['pressure'] = 1.5 if value else 2
+            instance['count'] = 3
+            instance['mixed'] = True if value else 'disabled'
+            instance['vectorData'] = [1.0, 2.0, 3.0]
         bpy.context.scene.collection.objects.link(instance)
     bpy.context.view_layer.update()
 
     observations = []
+    messages = []
+    settings.report = lambda levels, message: messages.append((levels, message))
 
     class InspectingExporter(addon.BalsamExporter):
         def _obj_qml(self, obj, *args, **kwargs):
@@ -103,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     def export_shipmate(obj, *args, **kwargs):
         lines = original_shipmate(obj, *args, **kwargs)
         if obj.name == 'DoorHandle':
-            lines.insert(-1, f'    property bool inheritedClosed: {str(bool(obj["closed"])).lower()}')
+            lines.insert(-1, f'    closed: {str(bool(obj["closed"])).lower()}')
         return lines
 
     addon.export_shipmate = export_shipmate
@@ -121,14 +132,41 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
             for name, props in members:
                 assert props['closed'] == closed, (name, props)
                 assert props['options'] == {'values': [1, 2, 3], 'label': label}
+                if name in {'Door', 'DoorHandle'}:
+                    assert props['booleans'] == {
+                        'libraryOnly': True, 'nested': {'oldFlag': False}}
+                else:
+                    assert 'booleans' not in props
+                assert 'cycles' not in props
         scene = (output / 'Scene.qml').read_text()
         types = re.findall(r'^\s*(DoorWithHandle\w*) \{', scene, re.MULTILINE)
-        assert len(types) == len(set(types)) == 3, scene
-        bodies = [(output / (name + '.qml')).read_text() for name in types]
-        assert sum('inheritedClosed: true' in body for body in bodies) == 1
-        assert sum('inheritedClosed: false' in body for body in bodies) == 2
+        assert len(types) == 3 and set(types) == {'DoorWithHandle'}, scene
+        bodies = [(output / 'DoorWithHandle.qml').read_text()]
+        assert 'closed: root.closed' not in bodies[0]
+        assert 'localSetting: 7' in bodies[0]
+        assert 'newProperty:' not in bodies[0]
+        assert 'property real pressure: 7.0' in bodies[0]
+        assert 'property real pressure: 1.5' not in bodies[0]
+        assert sum('property bool closed' in body for body in bodies) == 1
+        assert 'property real pressure' in bodies[0]
+        assert 'property int count' in bodies[0]
+        assert 'property var newProperty' in bodies[0]
+        assert 'property var mixed' in bodies[0]
+        assert 'property var vectorData' in bodies[0]
+        assert any('WARNING' in levels and 'incompatible override types' in message
+                   and 'mixed' in message for levels, message in messages), messages
+        assert 'property var booleans' not in bodies[0]
+        assert 'property var cycles' not in bodies[0]
+        assert 'property var options' in bodies[0]
+        assert not list(output.glob('*_Props_*.qml'))
+        assert 'closed: true' in scene
+        assert 'closed: false' in scene
+        assert 'newProperty: ClosedInstance' in scene
+        assert 'newProperty: OpenInstance' in scene
+        assert 'booleans:' not in scene
+        assert 'cycles:' not in scene
         sources = [re.search(r'source: "([^"]+\.mesh)"', body).group(1) for body in bodies]
-        assert len(set(sources)) == 3, sources
+        assert len(set(sources)) == 1, sources
         qrc = (output / 'Scene.qrc').read_text()
         for name in types:
             assert name + '.qml' in qrc
@@ -136,7 +174,12 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
             assert (output / mesh_source).is_file()
         before = {path.name: path.read_text() for path in output.glob('*.qml')}
         assert InspectingExporter(str(output / 'Scene.qml'), settings).export() == {'FINISHED'}
-        assert before == {path.name: path.read_text() for path in output.glob('*.qml')}
+        after = {path.name: path.read_text() for path in output.glob('*.qml')}
+        assert before == after, {
+            name: (before.get(name), after.get(name))
+            for name in before.keys() | after.keys()
+            if before.get(name) != after.get(name)
+        }
     finally:
         addon.export_shipmate = original_shipmate
 
@@ -157,8 +200,6 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
         else:
             raise AssertionError('Expected export failure')
         assert {obj: properties(obj) for obj in library_objects} == originals
-        assert failing._instance_path == []
-        assert failing._instance_property_suffix == ''
 
     instance = bpy.data.objects['ClosedInstance']
     instance['enabled'] = False
@@ -167,21 +208,38 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     instance['InnerMember.enabled'] = True
     instance['InnerInstance.onlyHere'] = 42
     instance['MissingObject.enabled'] = True
+    instance['DoorHandle.pressure'] = 1.25
     messages = []
     settings.report = lambda levels, message: messages.append((levels, message))
     observations.clear()
     targeted = InspectingExporter(str(output / 'Targeted.qml'), settings)
-    targeted._obj_qml(instance)
-    assert len(observations) == 5, observations
-    for name, props in observations:
+    assert targeted.export() == {'FINISHED'}
+    targeted_members = [(name, props) for name, props in observations
+                        if props.get('newProperty') == 'ClosedInstance']
+    assert len(targeted_members) == 5, targeted_members
+    for name, props in targeted_members:
         assert props['enabled'] == (name in {'DoorHandle', 'InnerMember'}), (name, props)
         assert ('onlyHere' in props) == (name == 'InnerInstance'), (name, props)
         assert ('easing.type' in props) == (name == 'DoorHandle'), (name, props)
         assert not any(key.startswith(('DoorHandle.', 'InnerMember.', 'MissingObject.'))
                        for key in props), (name, props)
-    assert dict(observations)['DoorHandle']['easing.type'] == 'OutQuad'
+    assert dict(targeted_members)['DoorHandle']['easing.type'] == 'OutQuad'
     assert any('WARNING' in levels and 'MissingObject' in message
                for levels, message in messages), messages
+    target_scene = (output / 'Targeted.qml').read_text()
+    assert 'override_DoorHandle_enabled: true' in target_scene
+    target_types = re.findall(r'^\s*(DoorWithHandle\w*) \{',
+                              target_scene, re.MULTILINE)
+    target_component = (output / 'DoorWithHandle.qml').read_text()
+    assert 'enabled: root.override_DoorHandle_enabled' not in target_component
+    assert 'property real override_DoorHandle_pressure' in target_component
+    assert 'override_DoorHandle_pressure: 1.25' in target_scene
+    assert 'root.override_InnerMember_enabled' not in target_component
+    inner_types = re.findall(r'^\s*(InnerCollection\w*) \{',
+                             target_component, re.MULTILINE)
+    assert inner_types
+    inner_component = (output / f'{inner_types[0]}.qml').read_text()
+    assert 'enabled: root.override_InnerMember_enabled' not in inner_component
     assert {obj: properties(obj) for obj in library_objects} == originals
     assert targeted._instance_target_properties == {}
     assert targeted._instance_property_sources == {}
@@ -205,6 +263,8 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     for name, props in observations:
         if name == 'DoorHandle':
             assert props['enabled'] is True
+        elif name == 'InnerMember':
+            assert props == {**originals[bpy.data.objects[name]], 'localSetting': 7}
         else:
             assert props == originals[bpy.data.objects[name]], (name, props)
     assert {obj: properties(obj) for obj in library_objects} == originals
@@ -217,8 +277,94 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
         else:
             raise AssertionError('Expected invalid override failure')
         del plain_instance[invalid_key]
-        assert targeted._instance_path == []
         assert targeted._instance_target_properties == {}
         assert {obj: properties(obj) for obj in library_objects} == originals
+
+    class GuardedMember:
+        """Emulate Blender groups that reject assignment without recreation."""
+        instance_type = 'NONE'
+
+        def __init__(self, obj):
+            self.obj = obj
+            self.name = obj.name
+            self.fail_next = False
+
+        def __contains__(self, key):
+            return key in self.obj
+
+        def items(self):
+            return self.obj.items()
+
+        def __getitem__(self, key):
+            return self.obj[key]
+
+        def __delitem__(self, key):
+            del self.obj[key]
+
+        def __setitem__(self, key, value):
+            if key in self.obj and isinstance(self.obj[key], addon.IDPropertyGroup):
+                raise TypeError("Cannot assign dict to existing Group IDProperty")
+            if self.fail_next:
+                self.fail_next = False
+                raise TypeError('Expected assignment failure')
+            self.obj[key] = value
+
+    guarded = GuardedMember(linked.objects['Door'])
+
+    class GuardedInstance:
+        name = name_full = 'GuardedInstance'
+        library = None
+        instance_collection = SimpleNamespace(all_objects=[guarded])
+
+        def items(self):
+            return [('options', {'enabled': True})]
+
+    proxy = GuardedInstance()
+    exporter = addon.BalsamExporter(str(output / 'Guarded.qml'), settings)
+    for fail_assignment, fail_export in [(False, False), (False, True), (True, False)]:
+        guarded.fail_next = fail_assignment
+        try:
+            with exporter._collection_instance_properties(proxy):
+                assert guarded['options'].to_dict() == {'enabled': True}
+                if fail_export:
+                    raise RuntimeError('Expected guarded export failure')
+        except (TypeError, RuntimeError) as error:
+            assert str(error) == (
+                'Expected assignment failure' if fail_assignment
+                else 'Expected guarded export failure')
+        else:
+            assert not fail_assignment and not fail_export
+        assert {obj: properties(obj) for obj in library_objects} == originals
+        assert exporter._instance_target_properties == {}
+        assert exporter._instance_property_sources == {}
+
+    plain_instance['pressure'] = 'root.prop_value'
+    plain_instance['literalText'] = '"value"'
+    plain_instance['singleQuoted'] = "'va'"
+    plain_instance['unquoted'] = 'val'
+    plain_instance['DoorHandle.pressure'] = 'root.target_value'
+    plain_instance['_qt_balsam_qml_expressions'] = {'pressure': 'real'}
+    expression_exporter = addon.BalsamExporter(str(output / 'Expressions.qml'), settings)
+    assert expression_exporter.export() == {'FINISHED'}
+    text = (output / 'Expressions.qml').read_text()
+    component = (output / 'DoorWithHandle.qml').read_text()
+    assert 'pressure: root.prop_value' in text, text
+    assert 'override_DoorHandle_pressure: root.target_value' in text, text
+    assert 'literalText: "value"' in text, text
+    assert "singleQuoted: 'va'" in text, text
+    assert 'unquoted: val' in text, text
+    assert 'property var pressure' in component, component
+    assert 'property var override_DoorHandle_pressure' in component, component
+    assert 'property var literalText' in component, component
+    assert '_qt_balsam_qml_expressions' not in text and '_qt_balsam_qml_expressions' not in component
+    assert {obj: properties(obj) for obj in library_objects} == originals
+    plain_instance['DoorHandle.pressure'] = '   '
+    try:
+        addon.BalsamExporter(str(output / 'Invalid.qml'), settings).export()
+    except ValueError as error:
+        assert 'cannot be empty' in str(error)
+    else:
+        raise AssertionError('Expected empty QML expression failure')
+    assert {obj: properties(obj) for obj in library_objects} == originals
 
 print('COLLECTION_PROPERTIES_EXPORT_TESTS_OK')

@@ -253,7 +253,8 @@ def _rescale(positions):
     scale = ZERO if extent == 0 else ONE / extent
     out = []
     for x, y, z in p.tolist():
-        out.append(((f32(x) - mn[0]) * scale, (f32(y) - mn[1]) * scale, (f32(z) - mn[2]) * scale))
+        out.append(
+            ((f32(x) - mn[0]) * scale, (f32(y) - mn[1]) * scale, (f32(z) - mn[2]) * scale))
     return out, extent
 
 
@@ -317,7 +318,8 @@ def _perform_collapses(collapse_remap, locked, collapses, order, remap, wedge, k
             break
         if triangle_collapses >= goal:
             break
-        error_goal = F15 * collapses[order[edge_goal]][3] if edge_goal < count else FLT_MAX
+        error_goal = F15 * collapses[order[edge_goal]
+                                     ][3] if edge_goal < count else FLT_MAX
         if c[3] > error_goal and c[3] > result_error and triangle_collapses > goal // 6:
             break
 
@@ -333,7 +335,8 @@ def _perform_collapses(collapse_remap, locked, collapses, order, remap, wedge, k
         if k == KIND_COMPLEX:
             v = i0
             while True:
-                collapse_remap[v] = _complex_target(v, i1, remap, loop, loopback)
+                collapse_remap[v] = _complex_target(
+                    v, i1, remap, loop, loopback)
                 v = wedge[v]
                 if v == i0:
                     break
@@ -431,9 +434,12 @@ def simplify_edge(indices, positions, target_index_count):
             if (k1 == KIND_BORDER or k1 == KIND_SEAM) and loopback[i1] != i0:
                 continue
             i2 = result[t + NEXT_EDGE[e + 1]]
-            edge_weight = f32(10.0) if (k0 == KIND_BORDER or k1 == KIND_BORDER) else f32(0.5)
-            Q = _quadric_from_triangle_edge(vpos[i0], vpos[i1], vpos[i2], edge_weight)
-            QT = _quadric_from_triangle(vpos[i0], vpos[i1], vpos[i2], edge_weight)
+            edge_weight = f32(10.0) if (
+                k0 == KIND_BORDER or k1 == KIND_BORDER) else f32(0.5)
+            Q = _quadric_from_triangle_edge(
+                vpos[i0], vpos[i1], vpos[i2], edge_weight)
+            QT = _quadric_from_triangle(
+                vpos[i0], vpos[i1], vpos[i2], edge_weight)
             QT[10] = ZERO
             Q = _qadd(Q, QT)
             vq[remap[i0]] = _qadd(vq[remap[i0]], Q)
@@ -469,7 +475,8 @@ def simplify_edge(indices, positions, target_index_count):
 def _weld(all_positions, indices, normals):
     """generateVertexRemap over the referenced vertices: ids in order of first appearance."""
     pos = np.asarray(all_positions, dtype=np.float32)
-    nrm = np.asarray(normals, dtype=np.float32) if normals is not None else None
+    nrm = np.asarray(
+        normals, dtype=np.float32) if normals is not None else None
     welded_of = {}
     first = {}
     welded_positions = []
@@ -529,7 +536,8 @@ def _preserve_winding(positions, normals, flat_indices):
     face_normals = np.cross(points[b] - points[a], points[c] - points[a])
     source_normals = vertex_normals[a] + vertex_normals[b] + vertex_normals[c]
     flipped = np.einsum("ij,ij->i", face_normals, source_normals) < 0.0
-    triangles[flipped, 1], triangles[flipped, 2] = triangles[flipped, 2].copy(), triangles[flipped, 1].copy()
+    triangles[flipped, 1], triangles[flipped, 2] = triangles[flipped,
+                                                             2].copy(), triangles[flipped, 1].copy()
     return triangles.reshape(-1).tolist()
 
 
@@ -571,7 +579,8 @@ def recalculate_normals(positions, normals, flat_indices, merge_angle, split_ang
         smooth, _ = _normalize(smooth)
         if _dot(_vec(nrm, vid), smooth) < cos_split:
             out[pi] = vertex_base + len(new_vertices)
-            new_vertices.append((vid, tuple(float(x) for x in _normalize(smooth)[0])))
+            new_vertices.append((vid, tuple(float(x)
+                                for x in _normalize(smooth)[0])))
     return out
 
 
@@ -584,17 +593,20 @@ def levels_of_detail(all_positions, indices, normals=None, merge_angle=None, spl
     """
     if new_vertices is None:
         new_vertices = []
-    recalc = normals is not None and merge_angle is not None and not (merge_angle == 0 and split_angle == 0)
+    recalc = normals is not None and merge_angle is not None and not (
+        merge_angle == 0 and split_angle == 0)
     if vertex_base is None:
         vertex_base = len(all_positions)
-    welded_indices, welded_positions, welded_original = _weld(all_positions, indices, None)
+    welded_indices, welded_positions, welded_original = _weld(
+        all_positions, indices, None)
     _, scale = _rescale(welded_positions)
     index_count = len(indices)
     index_target = 12
     last_count = 0
     lods = []
     while index_target < index_count:
-        new_indices, error = simplify_edge(welded_indices, welded_positions, index_target)
+        new_indices, error = simplify_edge(
+            welded_indices, welded_positions, index_target)
         count = len(new_indices)
         if float(count) < float(last_count) * 1.5:
             index_target = int(float(index_target) * 1.5)
@@ -643,18 +655,22 @@ def _capped_levels(all_positions, indices, normals, merge, split, new_vertices, 
     count (split vertices included) fits the cap is searched; its distance is error * scaleFactor
     of that run. Stops after the first cap at or below LOD_CAP_STOP.
     """
-    recalc = normals is not None and merge is not None and not (merge == 0 and split == 0)
-    welded_indices, welded_positions, welded_original = _weld(all_positions, indices, None)
+    recalc = normals is not None and merge is not None and not (
+        merge == 0 and split == 0)
+    welded_indices, welded_positions, welded_original = _weld(
+        all_positions, indices, None)
     _, scale = _rescale(welded_positions)
     base = len({p.tobytes() for p in welded_positions})
     triangles = len(welded_indices) // 3
 
     def fit(count_triangles):
-        new, error = simplify_edge(welded_indices, welded_positions, 3 * count_triangles)
+        new, error = simplify_edge(
+            welded_indices, welded_positions, 3 * count_triangles)
         original = [welded_original[v] for v in new]
         original = _preserve_winding(all_positions, normals, original)
         if recalc:
-            counted = recalculate_normals(all_positions, normals, original, merge, split, vertex_base, [])
+            counted = recalculate_normals(
+                all_positions, normals, original, merge, split, vertex_base, [])
         else:
             counted = original
         return original, error, len(set(counted))
@@ -678,12 +694,14 @@ def _capped_levels(all_positions, indices, normals, merge, split, new_vertices, 
                 high = mid - 1
         if best is None:
             if warnings is not None:
-                warnings.append(f"LOD{level} cannot reach {cap} vertices; generated levels stop here")
+                warnings.append(f"LOD{level} cannot reach {
+                                cap} vertices; generated levels stop here")
             break
         original, error, _ = best
         original = _preserve_winding(all_positions, normals, original)
         if recalc:
-            original = recalculate_normals(all_positions, normals, original, merge, split, vertex_base, new_vertices)
+            original = recalculate_normals(
+                all_positions, normals, original, merge, split, vertex_base, new_vertices)
         lods.append((float(f32(error * scale)), original))
         if cap <= LOD_CAP_STOP:
             break
@@ -710,7 +728,8 @@ def build_generated_lods(points, normals, ranges, indices, highest, vertex_base,
                                   warnings=warnings)
         else:
             # Qt pushes these to the front of the LOD list, so the last level created is LOD1.
-            lods = levels_of_detail(points, subset, normals, merge, split, new_vertices, vertex_base)[::-1]
+            lods = levels_of_detail(
+                points, subset, normals, merge, split, new_vertices, vertex_base)[::-1]
         kept = []
         for distance, flat in lods[:highest]:
             kept.append((distance, flat))
@@ -743,7 +762,8 @@ def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_b
     per_subset = []
 
     for start, count in ranges:
-        source_indices = np.asarray(indices[start:start + count], dtype=np.uint32)
+        source_indices = np.asarray(
+            indices[start:start + count], dtype=np.uint32)
         if count < 3 or len(np.unique(source_indices)) <= LOD_CAP_STOP:
             per_subset.append([])
             continue
@@ -752,7 +772,8 @@ def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_b
         previous_index_count = len(source_indices)
         for level in range(1, min(int(highest), MAX_LOD_LEVEL) + 1):
             # Halving the target triangle ratio at each level keeps the exported LOD chain monotonic.
-            target_index_count = max(3, int(len(source_indices) * (0.5 ** level)))
+            target_index_count = max(
+                3, int(len(source_indices) * (0.5 ** level)))
             target_index_count -= target_index_count % 3
             destination = np.empty(len(source_indices), dtype=np.uint32)
             simplified_count = simplify(
@@ -765,7 +786,8 @@ def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_b
             # meshopt_simplify can stop above its requested target when its error bound
             # prevents further collapses. For distant LODs, try its faster, less
             # conservative simplifier before giving up on this subset.
-            target_is_missed = len(flat) > max(3, int(target_index_count * 1.25))
+            target_is_missed = len(flat) > max(
+                3, int(target_index_count * 1.25))
             if len(flat) >= previous_index_count or target_is_missed:
                 if simplify_sloppy is None:
                     if len(flat) >= previous_index_count:
@@ -786,7 +808,8 @@ def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_b
                 break
             flat = _preserve_winding(positions, normals, flat)
             if angles is not None:
-                flat = recalculate_normals(positions, normals, flat, merge, split, vertex_base, new_vertices)
+                flat = recalculate_normals(
+                    positions, normals, flat, merge, split, vertex_base, new_vertices)
             lods.append((flat, 0.0))
             previous_index_count = len(flat)
             if len(set(flat)) <= LOD_CAP_STOP:
@@ -795,5 +818,6 @@ def build_meshoptimizer_lods(points, normals, ranges, indices, highest, vertex_b
 
     levels = {}
     for level in range(1, max((len(lods) for lods in per_subset), default=0) + 1):
-        levels[level] = [lods[level - 1] if level <= len(lods) else None for lods in per_subset]
+        levels[level] = [lods[level - 1] if level <=
+                         len(lods) else None for lods in per_subset]
     return levels, new_vertices

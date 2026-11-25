@@ -34,17 +34,23 @@ class OBJECT_OT_add_qml_property_animation(Operator):
     bl_description = 'Add a parent-targeted LM.PropertyAnimation marker'
     bl_options = {'REGISTER', 'UNDO'}
 
-    animation_property: StringProperty(name='Property', default=DEFAULTS['property'])
-    properties: StringProperty(name='Properties', description='Optional comma-separated property names')
-    duration: StringProperty(name='Duration (QML)', default=DEFAULTS['duration'])
+    animation_property: StringProperty(
+        name='Property', default=DEFAULTS['property'])
+    properties: StringProperty(
+        name='Properties', description='Optional comma-separated property names')
+    duration: StringProperty(name='Duration (QML)',
+                             default=DEFAULTS['duration'])
     from_value: StringProperty(name='From (QML)', default=DEFAULTS['from'])
     to_value: StringProperty(name='To (QML)', default=DEFAULTS['to'])
-    easing_type: EnumProperty(name='Easing type', items=EASING_ITEMS, default='Linear')
+    easing_type: EnumProperty(
+        name='Easing type', items=EASING_ITEMS, default='Linear')
     easing_amplitude: FloatProperty(name='Amplitude', default=1.0)
     easing_overshoot: FloatProperty(name='Overshoot', default=1.70158)
     easing_period: FloatProperty(name='Period', default=0.45)
-    easing_bezier_curve: StringProperty(name='Bezier curve (QML)', description='QML list of real values, e.g. [0.25, 0.1, 0.25, 1, 1, 1]')
-    loops: IntProperty(name='Loops', default=1, min=-1, description='-1 means Animation.Infinite')
+    easing_bezier_curve: StringProperty(
+        name='Bezier curve (QML)', description='QML list of real values, e.g. [0.25, 0.1, 0.25, 1, 1, 1]')
+    loops: IntProperty(name='Loops', default=1, min=-1,
+                       description='-1 means Animation.Infinite')
     running: StringProperty(name='Running', default=DEFAULTS['running'])
 
     def execute(self, context):
@@ -99,14 +105,17 @@ class OBJECT_PT_qml_property_animation(Panel):
         obj = context.object
         layout.label(text='Target: Blender parent (fixed)')
         if obj.parent is None:
-            layout.label(text='Parent this marker to the object to animate.', icon='INFO')
+            layout.label(
+                text='Parent this marker to the object to animate.', icon='INFO')
         for key, label in [('property', 'Property'), ('properties', 'Properties'),
                            ('duration', 'Duration'), ('from', 'From'), ('to', 'To')]:
             if key in obj:
                 layout.prop(obj, '["' + key + '"]', text=label)
-        layout.prop(obj, 'qml_property_animation_easing_type', text='Easing type')
+        layout.prop(obj, 'qml_property_animation_easing_type',
+                    text='Easing type')
         for key, label in [('easing.amplitude', 'Amplitude'), ('easing.overshoot', 'Overshoot'),
-                           ('easing.period', 'Period'), ('easing.bezierCurve', 'Bezier curve'),
+                           ('easing.period',
+                            'Period'), ('easing.bezierCurve', 'Bezier curve'),
                            ('loops', 'Loops (-1 = infinite)'), ('running', 'Running')]:
             if key in obj:
                 layout.prop(obj, '["' + key + '"]', text=label)
@@ -116,14 +125,15 @@ def export_qml_property_animation(obj, nid, depth, parent_id):
     """Expression strings are QML code; only property-name strings are quoted."""
 
     if parent_id is None:
-        raise ValueError(f"Cannot export animation {nid!r}: parent_id must not be None")
+        raise ValueError(f"Cannot export animation {
+                         nid!r}: parent_id must not be None")
 
     indent = '    ' * depth
     child = indent + '    '
     lines = [indent + 'LM.PropertyAnimation {',
-             #f'{child}id: {nid}',
+             # f'{child}id: {nid}',
              # Animation has no built-in parent property. Supply its actual Blender parent.
-             #f'{child}readonly property QtObject parent: ' + target_id,
+             # f'{child}readonly property QtObject parent: ' + target_id,
              f'{child}target: {parent_id}']
     for name in ('property', 'properties'):
         value = str(obj.get(name, DEFAULTS[name]))
@@ -134,20 +144,24 @@ def export_qml_property_animation(obj, nid, depth, parent_id):
         if value.strip():
             lines.append(child + name + ': ' + value)
     easing = str(obj.get('easing.type', 'Linear'))
-    lines.append(child + 'easing.type: ' + (easing if easing.startswith('Easing.') else 'Easing.' + easing))
+    lines.append(child + 'easing.type: ' +
+                 (easing if easing.startswith('Easing.') else 'Easing.' + easing))
     for name in ('easing.amplitude', 'easing.overshoot', 'easing.period'):
-        lines.append(child + name + ': ' + repr(float(obj.get(name, DEFAULTS[name]))))
+        lines.append(child + name + ': ' +
+                     repr(float(obj.get(name, DEFAULTS[name]))))
     bezier = str(obj.get('easing.bezierCurve', ''))
     if bezier.strip():
         lines.append(child + 'easing.bezierCurve: ' + bezier)
     loops = int(obj.get('loops', 1))
-    lines.append(child + 'loops: ' + ('Animation.Infinite' if loops == -1 else str(loops)))
+    lines.append(child + 'loops: ' +
+                 ('Animation.Infinite' if loops == -1 else str(loops)))
     lines.append(child + 'running: ' + str(obj.get('running', 'false')))
     lines.append(indent + '}')
     return lines
 
 
-CLASSES = (OBJECT_OT_add_qml_property_animation, OBJECT_PT_qml_property_animation)
+CLASSES = (OBJECT_OT_add_qml_property_animation,
+           OBJECT_PT_qml_property_animation)
 
 
 def qml_property_animation_register():

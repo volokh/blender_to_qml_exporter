@@ -157,7 +157,8 @@ class _MeshCursor:
 
 def _ensure_available(data: bytes, offset: int, size: int, label: str) -> None:
     if offset < 0 or size < 0 or offset + size > len(data):
-        raise QtMeshImportError(f"Unexpected end of file while reading {label}.")
+        raise QtMeshImportError(
+            f"Unexpected end of file while reading {label}.")
 
 
 def _unpack_from(fmt: str, data: bytes, offset: int, label: str):
@@ -179,14 +180,16 @@ def _decode_utf16_name(raw: bytes) -> str:
 def _component_size(component_type: int) -> int:
     fmt = _COMPONENT_FORMATS.get(component_type)
     if fmt is None:
-        raise QtMeshImportError(f"Unsupported Qt mesh component type: {component_type}.")
+        raise QtMeshImportError(
+            f"Unsupported Qt mesh component type: {component_type}.")
     return struct.calcsize("<" + fmt)
 
 
 def _read_components(buffer: bytes, base_offset: int, component_type: int, component_count: int) -> tuple:
     fmt = _COMPONENT_FORMATS.get(component_type)
     if fmt is None:
-        raise QtMeshImportError(f"Unsupported Qt mesh component type: {component_type}.")
+        raise QtMeshImportError(
+            f"Unsupported Qt mesh component type: {component_type}.")
     size = struct.calcsize("<" + fmt) * component_count
     _ensure_available(buffer, base_offset, size, "vertex attribute")
     return struct.unpack_from("<" + (fmt * component_count), buffer, base_offset)
@@ -195,7 +198,8 @@ def _read_components(buffer: bytes, base_offset: int, component_type: int, compo
 def _read_index_buffer(mesh: QtMeshData) -> list[int]:
     fmt = _COMPONENT_FORMATS.get(mesh.index_component_type)
     if fmt is None:
-        raise QtMeshImportError(f"Unsupported Qt index component type: {mesh.index_component_type}.")
+        raise QtMeshImportError(f"Unsupported Qt index component type: {
+                                mesh.index_component_type}.")
 
     item_size = _component_size(mesh.index_component_type)
     count = len(mesh.index_buffer) // item_size
@@ -207,7 +211,8 @@ def _read_index_buffer(mesh: QtMeshData) -> list[int]:
 
 def _read_file_header(data: bytes) -> list[tuple[int, int]]:
     if len(data) < MULTI_HEADER_STRUCT_SIZE + MULTI_ENTRY_STRUCT_SIZE:
-        raise QtMeshImportError("File is too small to be a Qt Quick 3D .mesh file.")
+        raise QtMeshImportError(
+            "File is too small to be a Qt Quick 3D .mesh file.")
 
     footer_offset = len(data) - MULTI_HEADER_STRUCT_SIZE
     file_id, file_version, _entries_offset, mesh_count = _unpack_from(
@@ -219,7 +224,8 @@ def _read_file_header(data: bytes) -> list[tuple[int, int]]:
         raise QtMeshImportError("Qt .mesh file contains no mesh entries.")
 
     entries_offset = footer_offset - (MULTI_ENTRY_STRUCT_SIZE * mesh_count)
-    _ensure_available(data, entries_offset, MULTI_ENTRY_STRUCT_SIZE * mesh_count, "multi-mesh entries")
+    _ensure_available(data, entries_offset,
+                      MULTI_ENTRY_STRUCT_SIZE * mesh_count, "multi-mesh entries")
 
     entries = []
     for index in range(mesh_count):
@@ -238,9 +244,11 @@ def _read_mesh_data(data: bytes, mesh_id: int, mesh_offset: int) -> QtMeshData:
         "<IHHI", data, mesh_offset, "mesh data header")
 
     if file_id != MESH_FILE_ID:
-        raise QtMeshImportError(f"Invalid mesh data id for mesh {mesh_id}: {file_id}.")
+        raise QtMeshImportError(f"Invalid mesh data id for mesh {
+                                mesh_id}: {file_id}.")
     if file_version < LEGACY_MESH_FILE_VERSION or file_version > MESH_FILE_VERSION:
-        raise QtMeshImportError(f"Unsupported Qt mesh data version: {file_version}.")
+        raise QtMeshImportError(
+            f"Unsupported Qt mesh data version: {file_version}.")
 
     cursor = _MeshCursor(mesh_offset + MESH_HEADER_STRUCT_SIZE)
     (
@@ -273,14 +281,19 @@ def _read_mesh_data(data: bytes, mesh_id: int, mesh_offset: int) -> QtMeshData:
             cursor.offset + index * VERTEX_BUFFER_ENTRY_STRUCT_SIZE,
             "vertex buffer entry",
         )
-        vertex_entries.append(QtVertexEntry("", component_type, component_count, entry_offset))
-    cursor.aligned_advance(vertex_entries_count * VERTEX_BUFFER_ENTRY_STRUCT_SIZE)
+        vertex_entries.append(QtVertexEntry(
+            "", component_type, component_count, entry_offset))
+    cursor.aligned_advance(vertex_entries_count *
+                           VERTEX_BUFFER_ENTRY_STRUCT_SIZE)
 
     for entry in vertex_entries:
-        (name_length,) = _unpack_from("<I", data, cursor.offset, "vertex attribute name length")
+        (name_length,) = _unpack_from("<I", data,
+                                      cursor.offset, "vertex attribute name length")
         cursor.advance(4)
-        _ensure_available(data, cursor.offset, name_length, "vertex attribute name")
-        entry.name = _decode_ascii_name(data[cursor.offset:cursor.offset + name_length])
+        _ensure_available(data, cursor.offset, name_length,
+                          "vertex attribute name")
+        entry.name = _decode_ascii_name(
+            data[cursor.offset:cursor.offset + name_length])
         cursor.aligned_advance(name_length)
 
     _ensure_available(data, cursor.offset, vertex_data_size, "vertex buffer")
@@ -341,7 +354,8 @@ def _read_mesh_data(data: bytes, mesh_id: int, mesh_offset: int) -> QtMeshData:
         # named nameLength in code, but it is a character count, not bytes.
         name_byte_size = subset.name_length * 2
         _ensure_available(data, cursor.offset, name_byte_size, "subset name")
-        subset.name = _decode_utf16_name(data[cursor.offset:cursor.offset + name_byte_size])
+        subset.name = _decode_utf16_name(
+            data[cursor.offset:cursor.offset + name_byte_size])
         cursor.aligned_advance(name_byte_size)
 
     lod_byte_size = 0
@@ -406,7 +420,8 @@ def _qt_to_blender_vec3(value: tuple, convert_coords: bool) -> tuple[float, floa
 
 
 def _normalize_vec3(value: tuple[float, float, float]) -> tuple[float, float, float]:
-    length = math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
+    length = math.sqrt(value[0] * value[0] + value[1]
+                       * value[1] + value[2] * value[2])
     if length <= 1.0e-8:
         return (0.0, 0.0, 1.0)
     return (value[0] / length, value[1] / length, value[2] / length)
@@ -434,13 +449,16 @@ def _append_topology(indices: list[int], draw_mode: int, winding: int, vertex_co
 
     if draw_mode == DRAW_MODE_TRIANGLES:
         for offset in range(0, len(indices) - 2, 3):
-            add_face((indices[offset], indices[offset + 1], indices[offset + 2]))
+            add_face(
+                (indices[offset], indices[offset + 1], indices[offset + 2]))
     elif draw_mode == DRAW_MODE_TRIANGLE_STRIP:
         for offset in range(0, len(indices) - 2):
             if offset % 2:
-                face = (indices[offset + 1], indices[offset], indices[offset + 2])
+                face = (indices[offset + 1],
+                        indices[offset], indices[offset + 2])
             else:
-                face = (indices[offset], indices[offset + 1], indices[offset + 2])
+                face = (indices[offset], indices[offset + 1],
+                        indices[offset + 2])
             add_face(face)
     elif draw_mode == DRAW_MODE_TRIANGLE_FAN:
         if len(indices) >= 3:
@@ -531,7 +549,8 @@ def _apply_color_layer(blender_mesh, qt_mesh: QtMeshData, attributes: dict[str, 
         for loop_index in polygon.loop_indices:
             vertex_index = blender_mesh.loops[loop_index].vertex_index
             color = _read_vertex_attribute(qt_mesh, color_entry, vertex_index)
-            alpha = float(color[3]) if color_entry.component_count >= 4 else 1.0
+            alpha = float(
+                color[3]) if color_entry.component_count >= 4 else 1.0
             color_layer.data[loop_index].color = (
                 float(color[0]),
                 float(color[1]),
@@ -552,8 +571,10 @@ def _apply_custom_normals(blender_mesh, qt_mesh: QtMeshData, attributes: dict[st
     for polygon in blender_mesh.polygons:
         for loop_index in polygon.loop_indices:
             vertex_index = blender_mesh.loops[loop_index].vertex_index
-            normal = _read_vertex_attribute(qt_mesh, normal_entry, vertex_index)
-            normals.append(_normalize_vec3(_qt_to_blender_vec3(normal, convert_coords)))
+            normal = _read_vertex_attribute(
+                qt_mesh, normal_entry, vertex_index)
+            normals.append(_normalize_vec3(
+                _qt_to_blender_vec3(normal, convert_coords)))
 
     try:
         blender_mesh.normals_split_custom_set(normals)
@@ -570,7 +591,8 @@ def _create_blender_object(qt_mesh: QtMeshData, name: str, context, convert_coor
     attributes = _attribute_map(qt_mesh)
     position_entry = attributes.get(ATTR_POSITION)
     if position_entry is None or position_entry.component_count < 3:
-        raise QtMeshImportError(f"Mesh {qt_mesh.mesh_id} does not contain attr_pos geometry.")
+        raise QtMeshImportError(
+            f"Mesh {qt_mesh.mesh_id} does not contain attr_pos geometry.")
 
     vertices = []
     for vertex_index in range(qt_mesh.vertex_count):
@@ -600,7 +622,8 @@ def _create_blender_object(qt_mesh: QtMeshData, name: str, context, convert_coor
     blender_mesh.update()
 
     for index, subset in enumerate(qt_mesh.subsets):
-        blender_mesh.materials.append(_make_material(subset.name or f"subset_{index}", index))
+        blender_mesh.materials.append(_make_material(
+            subset.name or f"subset_{index}", index))
 
     if blender_mesh.materials:
         for polygon, material_index in zip(blender_mesh.polygons, face_materials):
@@ -612,7 +635,8 @@ def _create_blender_object(qt_mesh: QtMeshData, name: str, context, convert_coor
     if import_colors:
         _apply_color_layer(blender_mesh, qt_mesh, attributes)
     if import_normals:
-        _apply_custom_normals(blender_mesh, qt_mesh, attributes, convert_coords)
+        _apply_custom_normals(blender_mesh, qt_mesh,
+                              attributes, convert_coords)
     blender_mesh.update()
 
     obj = bpy.data.objects.new(name, blender_mesh)
@@ -631,7 +655,8 @@ def import_qt_mesh_file(filepath: str | Path, context=None, convert_coords: bool
     objects = []
     base_name = path.stem
     for qt_mesh in meshes:
-        object_name = base_name if len(meshes) == 1 else f"{base_name}_{qt_mesh.mesh_id}"
+        object_name = base_name if len(meshes) == 1 else f"{
+            base_name}_{qt_mesh.mesh_id}"
         objects.append(_create_blender_object(
             qt_mesh,
             object_name,

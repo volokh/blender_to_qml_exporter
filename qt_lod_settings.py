@@ -14,7 +14,8 @@ def _mesh_object_poll(_self, obj):
 class QtLodSettings(PropertyGroup):
     enabled: BoolProperty(name="Enable LOD Overrides", default=False)
     use_max: BoolProperty(name="Override Generated LOD Levels", default=False)
-    max_levels: IntProperty(name="Maximum Generated LOD", default=7, min=0, max=MAX_LOD_LEVEL)
+    max_levels: IntProperty(name="Maximum Generated LOD",
+                            default=7, min=0, max=MAX_LOD_LEVEL)
 
 
 for _level in range(1, MAX_LOD_LEVEL + 1):

@@ -142,7 +142,8 @@ def _texture_property_lines(ind1, prop, src, transform=None):
         if key in transform:
             lines.append(f"{ind1}    {key}: {_qml_number(transform[key])}")
     if "generateMipmaps" in transform:
-        lines.append(f"{ind1}    generateMipmaps: {_bool(transform['generateMipmaps'])}")
+        lines.append(f"{ind1}    generateMipmaps: {
+                     _bool(transform['generateMipmaps'])}")
     for key in ("minFilter", "magFilter", "mipFilter"):
         if key in transform:
             lines.append(f"{ind1}    {key}: Texture.{transform[key]}")
@@ -464,7 +465,8 @@ def _texture_channel_route(socket, stack=(), visited=None):
         names = {'Red': 'R', 'Green': 'G', 'Blue': 'B', 'Alpha': 'A',
                  'R': 'R', 'G': 'G', 'B': 'B', 'X': 'R', 'Y': 'G', 'Z': 'B'}
         # A scalar connected to Color/Vector is replicated into RGB/XYZ.
-        component = upstream if upstream in {'R', 'G', 'B', 'A'} else names.get(output.name)
+        component = upstream if upstream in {
+            'R', 'G', 'B', 'A'} else names.get(output.name)
         return image, component, None
     if node.type == 'NORMAL_MAP':
         return follow(node.inputs.get('Color'))
@@ -494,7 +496,8 @@ def _texture_channel_lines(ind, channel_property, socket, image, source,
     if kind == 'normal':
         # Tangent-space normals encode a vector, not an individual component.
         if channel not in (None, 'RGB') or limitation:
-            lines.append(f"{ind}// {channel_property}: normal input needs RGB; bake non-RGB node processing.")
+            lines.append(
+                f"{ind}// {channel_property}: normal input needs RGB; bake non-RGB node processing.")
         return lines
     if grayscale and channel == 'RGB' and kind == 'color':
         channel = 'R'  # Replicate an R8 color image into RGB.
@@ -516,7 +519,8 @@ def _texture_channel_lines(ind, channel_property, socket, image, source,
     if channel not in {'R', 'G', 'B', 'A'} or limitation:
         channel = default
     if limitation:
-        lines.append(f"{ind}// {channel_property}: {limitation}; fallback Material.{channel}.")
+        lines.append(
+            f"{ind}// {channel_property}: {limitation}; fallback Material.{channel}.")
     lines.append(f"{ind}{channel_property}: Material.{channel}")
     if single_flag:
         lines.append(f"{ind}{single_flag}: true")
@@ -635,7 +639,7 @@ def transparent_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, m
     ind1 = "    " * (indent + 1)
     base_color = node_val(bsdf, 'Color', (1.0, 1.0, 1.0, 0.0))
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
-    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
+    mat_name_ = mat.name if mirror_info is None else mat.name + ".mirror"
     out = [f"{ind}// users: {mat.users}",
            f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
@@ -662,7 +666,7 @@ def default_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None
     ind1 = "    " * (indent + 1)
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
     alpha_mode = "Blend" if mat.diffuse_color[3] < 1.0 else "Opaque"
-    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
+    mat_name_ = mat.name if mirror_info is None else mat.name + ".mirror"
     out = [f"{ind}// users: {mat.users}",
            f"{ind}{material_type} {{",
            f'{ind1}id: {material_id or f"mat_{sanitize(mat.name)}"}',
@@ -721,7 +725,7 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
         return None, None
 
     material_type = "LM.PrincipledBSDFMaterial" if mirror_info else "PrincipledMaterial"
-    mat_name_ = mat.name if mirror_info == None else mat.name + ".mirror"
+    mat_name_ = mat.name if mirror_info is None else mat.name + ".mirror"
     lines = [
         f"{ind}// users: {mat.users}",
         f"{ind}{material_type} {{",
@@ -1058,35 +1062,49 @@ def principled_bsdf_to_quick3d(bsdf, mat, img_dir, exported_images, indent=0, ma
     # Only emit channels for maps actually exported on this material type.
     # Full RGB colors and tangent-space normals are not scalar channel inputs.
     channel_inputs = (
-        ("baseColor", base_img, ("Base Color",), "R", "color", "baseColorSingleChannelEnabled"),
+        ("baseColor", base_img, ("Base Color",), "R",
+         "color", "baseColorSingleChannelEnabled"),
         ("metalness", metal_img, ("Metallic",), "B", "scalar", None),
         ("roughness", rough_img, ("Roughness",), "G", "scalar", None),
-        ("diffuseRoughness", diffuse_rough_img, ("Diffuse Roughness",), "R", "scalar", None),
-        ("specular", specular_img, ("Specular IOR Level", "Specular"), "R", "scalar", None),
-        ("specularTint", specular_tint_img, ("Specular Tint",), "R", "color", "specularTintSingleChannelEnabled"),
+        ("diffuseRoughness", diffuse_rough_img,
+         ("Diffuse Roughness",), "R", "scalar", None),
+        ("specular", specular_img,
+         ("Specular IOR Level", "Specular"), "R", "scalar", None),
+        ("specularTint", specular_tint_img, ("Specular Tint",),
+         "R", "color", "specularTintSingleChannelEnabled"),
         ("anisotropic", anisotropic_img, ("Anisotropic",), "R", "scalar", None),
-        ("anisotropicRotation", anisotropic_rotation_img, ("Anisotropic Rotation",), "R", "scalar", None),
+        ("anisotropicRotation", anisotropic_rotation_img,
+         ("Anisotropic Rotation",), "R", "scalar", None),
         ("normal", normal_img, ("Normal",), "R", "normal", None),
-        ("subsurfaceWeight", subsurface_img, ("Subsurface Weight", "Subsurface"), "R", "scalar", None),
-        ("subsurfaceScale", subsurface_scale_img, ("Subsurface Scale",), "R", "scalar", None),
+        ("subsurfaceWeight", subsurface_img,
+         ("Subsurface Weight", "Subsurface"), "R", "scalar", None),
+        ("subsurfaceScale", subsurface_scale_img,
+         ("Subsurface Scale",), "R", "scalar", None),
         ("occlusion", ao_img, ("Occlusion",), "R", "scalar", None),
-        ("emissive", emissive_img, ("Emission Color", "Emission"), "R", "color", "emissiveSingleChannelEnabled"),
-        ("emissionStrength", emission_strength_img, ("Emission Strength",), "R", "scalar", None),
+        ("emissive", emissive_img, ("Emission Color", "Emission"),
+         "R", "color", "emissiveSingleChannelEnabled"),
+        ("emissionStrength", emission_strength_img,
+         ("Emission Strength",), "R", "scalar", None),
         ("opacity", opacity_img, ("Alpha",), "A", "scalar", None),
-        ("transmission", transmission_img, ("Transmission Weight", "Transmission"), "R", "scalar", None),
+        ("transmission", transmission_img,
+         ("Transmission Weight", "Transmission"), "R", "scalar", None),
         ("thickness", thickness_img, ("Thickness",), "G", "scalar", None),
         ("clearcoat", clearcoat_img, ("Coat Weight", "Clearcoat"), "R", "scalar", None),
-        ("clearcoatRoughness", clearcoat_rough_img, ("Coat Roughness", "Clearcoat Roughness"), "G", "scalar", None),
-        ("clearcoatNormal", clearcoat_normal_img, ("Coat Normal",), "R", "normal", None),
+        ("clearcoatRoughness", clearcoat_rough_img,
+         ("Coat Roughness", "Clearcoat Roughness"), "G", "scalar", None),
+        ("clearcoatNormal", clearcoat_normal_img,
+         ("Coat Normal",), "R", "normal", None),
         ("clearcoatTint", clearcoat_tint_img, ("Coat Tint",), "R", "color", None),
         ("sheenWeight", sheen_img, ("Sheen Weight", "Sheen"), "R", "scalar", None),
-        ("sheenRoughness", sheen_rough_img, ("Sheen Roughness",), "R", "scalar", None),
+        ("sheenRoughness", sheen_rough_img,
+         ("Sheen Roughness",), "R", "scalar", None),
         ("sheenTint", sheen_tint_img, ("Sheen Tint",), "R", "color", None),
     )
     for prop, image, sockets, default, kind, single_flag in channel_inputs:
         if not image or not any(line.strip().startswith(prop + "Map:") for line in lines):
             continue
-        socket = next((inp(name) for name in sockets if inp(name) is not None), None)
+        socket = next((inp(name)
+                      for name in sockets if inp(name) is not None), None)
         lines += _texture_channel_lines(ind1, prop + "Channel", socket, image,
                                         tex_source_from_image(image), img_dir,
                                         default, kind, single_flag)
@@ -1104,7 +1122,7 @@ def mat_to_quick3d(mat, img_dir, exported_images, indent=0, material_id=None, mi
         return default_to_quick3d(mat, img_dir, exported_images, indent, material_id, mirror_info, with_object_name)
 
     nodes_ = []
-    #for node_ in mat.node_tree.nodes:
+    # for node_ in mat.node_tree.nodes:
     #    nodes_.append(
     #        f'// type: {node_.type}, id_name: {node_.bl_idname}, id_name: {node_.bl_label}')
 

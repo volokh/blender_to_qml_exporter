@@ -33,11 +33,14 @@ def cloth_metadata(mesh):
     points, normals, pins = [], [], []
     for index in range(mesh['vertex_count']):
         offset = index * mesh['stride']
-        point = Vector(struct.unpack_from('<3f', mesh['vbuf'], offset + entries[b'attr_pos']))
+        point = Vector(struct.unpack_from(
+            '<3f', mesh['vbuf'], offset + entries[b'attr_pos']))
         points.append(point)
-        normals.append(Vector(struct.unpack_from('<3f', mesh['vbuf'], offset + entries[b'attr_norm'])))
+        normals.append(Vector(struct.unpack_from(
+            '<3f', mesh['vbuf'], offset + entries[b'attr_norm'])))
         if mesh.get('has_cloth_pins'):
-            weight = struct.unpack_from('<f', mesh['vbuf'], offset + entries[b'attr_color'] + 12)[0]
+            weight = struct.unpack_from(
+                '<f', mesh['vbuf'], offset + entries[b'attr_color'] + 12)[0]
             if weight > 0.5:
                 pins.append(point)
     normal = sum(normals, Vector())
@@ -59,9 +62,10 @@ def cloth_metadata(mesh):
             across = toward.normalized()
             up = normal.cross(across).normalized()
     xs, ys = [v.dot(across) for v in points], [v.dot(up) for v in points]
-    origin = across * min(xs) + up * ((min(ys) + max(ys)) * 0.5) + normal * center.dot(normal)
+    origin = across * min(xs) + up * ((min(ys) + max(ys))
+                                      * 0.5) + normal * center.dot(normal)
     return dict(clothOrigin=tuple(origin), clothAxisX=tuple(across),
                 clothAxisY=tuple(up), clothAxisZ=tuple(normal),
-                flagWidth=max(max(xs)-min(xs), 1e-6),
-                flagHeight=max(max(ys)-min(ys), 1e-6),
+                flagWidth=max(max(xs) - min(xs), 1e-6),
+                flagHeight=max(max(ys) - min(ys), 1e-6),
                 vertexPinWeights=bool(mesh.get('has_cloth_pins')))

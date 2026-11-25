@@ -12,13 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 addon = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('manual_lod_export_test', addon/'__init__.py', submodule_search_locations=[str(addon)])
+spec = importlib.util.spec_from_file_location('manual_lod_export_test', addon / '__init__.py', submodule_search_locations=[str(addon)])
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-reader = sys.modules[spec.name+'.qt_mesh_importer']
-validator = importlib.import_module(spec.name+'.qt_mesh_validate')
-port = importlib.import_module(spec.name+'.qt_simplifier')
+reader = sys.modules[spec.name + '.qt_mesh_importer']
+validator = importlib.import_module(spec.name + '.qt_mesh_validate')
+port = importlib.import_module(spec.name + '.qt_simplifier')
 
 MATERIALS = [bpy.data.materials.new('MatA'), bpy.data.materials.new('MatB')]
 temp_dirs = []
@@ -30,12 +30,12 @@ BIG_VERTS = 81       # 8x8 quad grid
 
 def grid_mesh(name, n, material_for_face=lambda i: i % 2, uv_layers=0):
     """n x n quad grid in the XY plane with two material slots."""
-    verts = [(float(x), float(y), 0.0) for y in range(n+1) for x in range(n+1)]
+    verts = [(float(x), float(y), 0.0) for y in range(n + 1) for x in range(n + 1)]
     faces = []
     for y in range(n):
         for x in range(n):
-            i = y*(n+1)+x
-            faces.append((i, i+1, i+n+2, i+n+1))
+            i = y * (n + 1) + x
+            faces.append((i, i + 1, i + n + 2, i + n + 1))
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
     for material in MATERIALS:
@@ -86,7 +86,7 @@ def export(obj, manual=True, generate=False, legacy_fixture=True, **extra):
         generate_lods=generate, manual_lods=manual, **{'convert_coords': True, 'generate_lod_count': 7, 'recalculate_lod_normals': True, **extra})
     out = Path(tempfile.mkdtemp(prefix='blender-manual-lod-'))
     temp_dirs.append(out)
-    e = module.BalsamExporter(str(out/'scene.qml'), settings)
+    e = module.BalsamExporter(str(out / 'scene.qml'), settings)
     e._obj_qml(obj)
     files = list(e.mesh_dir.rglob('*.mesh'))
     assert len(files) == 1, files
@@ -750,7 +750,7 @@ def test_mesh_lods_max_shared_mesh_objects_export_independently():
                                generate_lods=True, manual_lods=True, generate_lod_count=3)
     out = Path(tempfile.mkdtemp(prefix='blender-lod-limit-'))
     temp_dirs.append(out)
-    exporter = module.BalsamExporter(str(out/'scene.qml'), settings)
+    exporter = module.BalsamExporter(str(out / 'scene.qml'), settings)
     exporter._obj_qml(obj1)
     exporter._obj_qml(obj2)
     files = list(exporter.mesh_dir.rglob('*.mesh'))
@@ -778,7 +778,7 @@ def export_scene():
         report=lambda *args: None, apply_modifiers=True, convert_coords=True,
         generate_lods=False, manual_lods=True, export_animations=False,
         export_cameras=False, export_lights=False)
-    e = module.BalsamExporter(str(out/'scene.qml'), settings)
+    e = module.BalsamExporter(str(out / 'scene.qml'), settings)
     e.export()
     return out
 
@@ -794,7 +794,7 @@ def test_logic_module_detection():
 def test_scene_omits_logic_module_import_without_lm_objects():
     clear_scene()
     make_object('Plain', grid_mesh('Plain', 3))
-    qml = (export_scene()/'scene.qml').read_text(encoding='utf-8')
+    qml = (export_scene() / 'scene.qml').read_text(encoding='utf-8')
     assert 'import LogicModule as LM' not in qml, qml
     assert 'import "."' in qml, qml
 
@@ -804,7 +804,7 @@ def test_scene_imports_logic_module_when_lm_objects_exported():
     obj = make_object('Flag', grid_mesh('Flag', 3))
     obj.modifiers.new('SailingCloth', 'CLOTH')
     bpy.context.view_layer.update()
-    qml = (export_scene()/'scene.qml').read_text(encoding='utf-8')
+    qml = (export_scene() / 'scene.qml').read_text(encoding='utf-8')
     assert 'LM.Flag {' in qml, qml
     assert 'import LogicModule as LM' in qml, qml
     assert qml.index('import LogicModule as LM') < qml.index('import "."'), qml

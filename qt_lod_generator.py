@@ -52,7 +52,8 @@ def _plane_quadric(points, tri):
     if length <= 1e-30:
         return None
     normal = normal / length
-    plane = np.array([normal[0], normal[1], normal[2], -float(np.dot(normal, points[tri[0]]))])
+    plane = np.array([normal[0], normal[1], normal[2], -
+                     float(np.dot(normal, points[tri[0]]))])
     return np.outer(plane, plane)
 
 
@@ -98,7 +99,8 @@ class _EdgeCollapser:
                 continue
             tri = self.tris[t]
             before = _triangle_normal(self.points, tri)
-            after = _triangle_normal(self.points, tuple(kept if v == removed else v for v in tri))
+            after = _triangle_normal(self.points, tuple(
+                kept if v == removed else v for v in tri))
             if float(np.dot(before, before)) > 0.0 and float(np.dot(before, after)) <= 0.0:
                 return False
         return True
@@ -113,7 +115,8 @@ class _EdgeCollapser:
         if not shared or len(shared) > 2 or self.tri_count - len(shared) < 1:
             return None
         # Link condition: the only common neighbours are the opposite vertices of the shared triangles.
-        opposite = {v for t in shared for v in self.tris[t] if v != a and v != b}
+        opposite = {
+            v for t in shared for v in self.tris[t] if v != a and v != b}
         if (self._neighbours(a) & self._neighbours(b)) != opposite:
             return None
 
@@ -155,13 +158,15 @@ class _EdgeCollapser:
                 for v in self.tris[t]:
                     self.vert_tris[v].discard(t)
             else:
-                self.tris[t] = tuple(kept if v == removed else v for v in self.tris[t])
+                self.tris[t] = tuple(
+                    kept if v == removed else v for v in self.tris[t])
                 self.vert_tris[removed].discard(t)
                 self.vert_tris[kept].add(t)
         self.quadrics[kept] = self.quadrics[kept] + self.quadrics[removed]
         self.vert_tris.pop(removed, None)
         self.removed.add(removed)
-        self.vertex_count += int(bool(self.vert_tris.get(kept))) - kept_live - removed_live
+        self.vertex_count += int(bool(self.vert_tris.get(kept))
+                                 ) - kept_live - removed_live
 
     def _over(self, target, vertex_limit):
         if self.tri_count > target:
@@ -196,7 +201,8 @@ class _EdgeCollapser:
                     continue
                 self._collapse(removed, kept, shared)
                 self._push_edges_of([kept])
-            results.append([self.tris[t] for t, alive in enumerate(self.alive) if alive])
+            results.append([self.tris[t]
+                           for t, alive in enumerate(self.alive) if alive])
         return results
 
 
@@ -269,7 +275,8 @@ def _boundary_quadric(points, a, b, tri):
     if length <= 1e-30:
         return None
     normal = normal / length
-    plane = np.array([normal[0], normal[1], normal[2], -float(np.dot(normal, points[a]))])
+    plane = np.array([normal[0], normal[1], normal[2], -
+                     float(np.dot(normal, points[a]))])
     return BOUNDARY_WEIGHT * np.outer(plane, plane)
 
 
@@ -335,8 +342,10 @@ def build_generated_lods(points, normals, ranges, indices, specs, vertex_base, a
     (flat global indices, distinct position count). new_vertices lists (source vertex, unit normal) for
     the vertices appended from vertex_base onward.
     """
-    subsets = [triangles_from_flat(indices[start:start + count]) for start, count in ranges]
-    global_uses = _position_edge_uses(points, [tri for tris in subsets for tri in tris])
+    subsets = [triangles_from_flat(indices[start:start + count])
+               for start, count in ranges]
+    global_uses = _position_edge_uses(
+        points, [tri for tris in subsets for tri in tris])
     budgets = {spec["level"]: _vertex_budgets(spec["max_vertices"], [_distinct_count(tris) for tris in subsets])
                for spec in specs if spec.get("max_vertices") is not None}
 
@@ -373,7 +382,8 @@ def build_generated_lods(points, normals, ranges, indices, specs, vertex_base, a
                 used[j] = len(set(as_written(results[j])))
                 if used[j] > cap:
                     overflow = True
-                    limits[spec["level"]] = max(0, limits[spec["level"]] - (used[j] - cap))
+                    limits[spec["level"]] = max(
+                        0, limits[spec["level"]] - (used[j] - cap))
             if not overflow or angles is None:
                 break
 
@@ -388,6 +398,7 @@ def build_generated_lods(points, normals, ranges, indices, specs, vertex_base, a
             count = len({points[v].tobytes() for tri in lod_tris for v in tri})
             flat = [v for tri in lod_tris for v in tri]
             if angles is not None and flat:
-                flat = recalculate_normals(points, normals, flat, angles[0], angles[1], vertex_base, new_vertices)
+                flat = recalculate_normals(
+                    points, normals, flat, angles[0], angles[1], vertex_base, new_vertices)
             levels[spec["level"]].append((flat, count))
     return levels, new_vertices

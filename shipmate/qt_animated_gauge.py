@@ -49,7 +49,6 @@ class QMLAnimatedGaugeProperties(PropertyGroup):
     )
 
 
-
 class OBJECT_OT_add_qml_animated_gauge(Operator):
     bl_idname = "object.add_qml_animated_gauge"
     bl_label = "Qml.AnimatedGauge"
@@ -64,7 +63,7 @@ class OBJECT_OT_add_qml_animated_gauge(Operator):
 
     hover_text: StringProperty(
         name="Hover text",
-        #default="Rheostat switch",
+        # default="Rheostat switch",
         description="Hover text"
     )
 
@@ -82,7 +81,7 @@ class OBJECT_OT_add_qml_animated_gauge(Operator):
 
     value: FloatVectorProperty(
         name="MDM Values",
-        default=(0.0, 0.,0.),
+        default=(0.0, 0., 0.),
         description="Minimum|Default|Maximum value for the animated gauge"
     )
 
@@ -214,20 +213,26 @@ def I(n):
 def qml_animated_gauge_change_step(obj):
     return tuple(obj.get("change_step", (0., 0., 0.)))
 
+
 def qml_animated_gauge_value(obj):
     return tuple(obj.get("value", (0., 0., 0.)))
+
 
 def qml_animated_gauge_duration(obj):
     return obj.get("change_duration", 1000.0)
 
+
 def qml_animated_gauge_change_grade(obj):
     return obj.get("change_grade", 1.0)
+
 
 def qml_animated_gauge_hover_text(obj):
     return obj.get("hover_text", "")
 
+
 def qml_animated_gauge_initial_value(obj):
     return obj.get("initial_value", 0.0)
+
 
 def qml_animated_gauge_input_value(obj):
     return obj.get("value_in", None)
@@ -246,21 +251,21 @@ def export_qml_animated_gauge(obj, nid, d, with_object_name=True):
     input_value_ = qml_animated_gauge_input_value(obj)
     lines = [f'{I(d)}LM.AnimatedGauge {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d+1)}objectName: '{obj.name}'" if with_object_name else "",
-             f'{I(d+1)}node: parent',
-             f'{I(d+1)}minValue: {value_[0]}',
-             f'{I(d+1)}maxValue: {value_[2]}',
-             f'{I(d+1)}value: {input_value_ if input_value_ else value_[1]}',
-             f'{I(d+1)}changeGrade: Qt.vector3d{qt_pos(qml_animated_gauge_change_grade(obj))}',
-             #f'{I(d+1)}changeStep: Qt.vector3d{qt_pos(qml_animated_gauge_change_step(obj))}',
-             f'{I(d+1)}anim.duration: {qml_animated_gauge_duration(obj)}',
-             #f'{I(d+1)}initialValue: {qml_animated_gauge_initial_value(obj)}',
-             f'{I(d+1)}picker.parent: node.parent',
+             f"{I(d + 1)}objectName: '{obj.name}'" if with_object_name else "",
+             f'{I(d + 1)}node: parent',
+             f'{I(d + 1)}minValue: {value_[0]}',
+             f'{I(d + 1)}maxValue: {value_[2]}',
+             f'{I(d + 1)}value: {input_value_ if input_value_ else value_[1]}',
+             f'{I(d + 1)}changeGrade: Qt.vector3d{qt_pos(qml_animated_gauge_change_grade(obj))}',
+             # f'{I(d+1)}changeStep: Qt.vector3d{qt_pos(qml_animated_gauge_change_step(obj))}',
+             f'{I(d + 1)}anim.duration: {qml_animated_gauge_duration(obj)}',
+             # f'{I(d+1)}initialValue: {qml_animated_gauge_initial_value(obj)}',
+             f'{I(d + 1)}picker.parent: node.parent',
              ]
 
     hover_text = qml_animated_gauge_hover_text(obj)
     if hover_text:
-        lines += [f'{I(d+1)}picker.hoverText: `{hover_text}`']
+        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text}`']
 
     lines += [f'{I(d)}}}']
     return lines
@@ -282,7 +287,5 @@ def qml_animated_gauge_unregister():
         bpy.utils.unregister_class(cls)
 
 
-
 if __name__ == "__main__":
     qml_animated_gauge_register()
-

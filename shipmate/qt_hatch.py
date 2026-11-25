@@ -141,8 +141,10 @@ class OBJECT_PT_qml_hatch(Panel):
         layout.prop(obj, '["hover_text"]', text='Hover Text')
         layout.prop(obj, '["value_out"]', text='Output')
         layout.prop(obj, '["validator"]', text='Validator')
-        layout.prop(obj, 'qml_hatch_step_positive_sound', text='Step Positive Sound')
-        layout.prop(obj, 'qml_hatch_step_negative_sound', text='Step Negative Sound')
+        layout.prop(obj, 'qml_hatch_step_positive_sound',
+                    text='Step Positive Sound')
+        layout.prop(obj, 'qml_hatch_step_negative_sound',
+                    text='Step Negative Sound')
 
 
 '''def menu_func_empty(self, context):
@@ -173,6 +175,7 @@ def I(n):
 def qml_hatch_final_rotation(obj):
     return tuple(obj.get("final_rotation", (0., 0., 0.)))
 
+
 def qml_hatch_final_position(obj):
     return tuple(obj.get("final_position", (0., 0., 0.)))
 
@@ -183,6 +186,7 @@ def qml_hatch_hover_text(obj):
 
 def qml_hatch_output_value(obj):
     return obj.get("value_out", None)
+
 
 def qml_hatch_validator(obj):
     return obj.get("validator", None)
@@ -217,32 +221,32 @@ def export_qml_hatch(obj, nid, d):
     rigid_body_ = getattr(parent_, "rigid_body", None)
     lines = [f'{I(d)}LM.Hatch {{',
              # f'{I(d+1)}id: {nid}',
-             f'{I(d+1)}node: {"parent" if rigid_body_ is None else "parent.parent"}',
-             f'{I(d+1)}picker.parent: {"node" if rigid_body_ is None else "parent"}',
-             f'{I(d+1)}picker.pickObject: {"node" if rigid_body_ is None else "parent"}',
-             f'{I(d+1)}finalRotation: Qt.vector3d{qt_pos(qml_hatch_final_rotation(obj))}',
-             f'{I(d+1)}finalPosition: Qt.vector3d{qt_pos(qml_hatch_final_position(obj))}'
-            ]
+             f'{I(d + 1)}node: {"parent" if rigid_body_ is None else "parent.parent"}',
+             f'{I(d + 1)}picker.parent: {"node" if rigid_body_ is None else "parent"}',
+             f'{I(d + 1)}picker.pickObject: {"node" if rigid_body_ is None else "parent"}',
+             f'{I(d + 1)}finalRotation: Qt.vector3d{qt_pos(qml_hatch_final_rotation(obj))}',
+             f'{I(d + 1)}finalPosition: Qt.vector3d{qt_pos(qml_hatch_final_position(obj))}'
+             ]
 
     hover_text = qml_hatch_hover_text(obj)
     if hover_text:
-        lines += [f'{I(d+1)}picker.hoverText: `{hover_text}`']
+        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text}`']
 
     out_value_ = qml_hatch_output_value(obj)
     if out_value_:
-        lines += [f'{I(d+1)}onIsFinalChanged: {out_value_}']
+        lines += [f'{I(d + 1)}onIsFinalChanged: {out_value_}']
 
     validator_ = qml_hatch_validator(obj)
     if validator_:
-         lines += [f'{I(d+1)}validator: {validator_}']
+        lines += [f'{I(d + 1)}validator: {validator_}']
 
     stepPositiveSound_ = get_step_pos_sound(obj)
     if stepPositiveSound_:
-        lines += [f'{I(d+1)}initSound: "{stepPositiveSound_}"']
+        lines += [f'{I(d + 1)}initSound: "{stepPositiveSound_}"']
 
     stepNegativeSound_ = get_step_neg_sound(obj)
     if stepNegativeSound_:
-        lines += [f'{I(d+1)}finalSound: "{stepNegativeSound_}"']
+        lines += [f'{I(d + 1)}finalSound: "{stepNegativeSound_}"']
 
     lines += [f'{I(d)}}}']
     return lines
@@ -250,10 +254,10 @@ def export_qml_hatch(obj, nid, d):
 
 def qml_hatch_register():
     # RNA proxies expose new options even on markers created before these fields existed.
-    #bpy.types.Object.qml_hatch_step_positive_sound = StringProperty(
+    # bpy.types.Object.qml_hatch_step_positive_sound = StringProperty(
     #    name="Step Positive Sound", subtype='FILE_PATH', get=get_step_pos_sound, set=set_step_pos_sound)
 
-    #bpy.types.Object.qml_hatch_step_negative_sound = StringProperty(
+    # bpy.types.Object.qml_hatch_step_negative_sound = StringProperty(
     #    name="Step Negative Sound", subtype='FILE_PATH', get=get_step_neg_sound, set=set_step_neg_sound)
 
     for cls in classes:
@@ -264,8 +268,8 @@ def qml_hatch_register():
 
 
 def qml_hatch_unregister():
-    #del bpy.types.Object.qml_hatch_step_positive_sound
-    #del bpy.types.Object.qml_hatch_step_negative_sound
+    # del bpy.types.Object.qml_hatch_step_positive_sound
+    # del bpy.types.Object.qml_hatch_step_negative_sound
     # bpy.types.VIEW3D_MT_add.remove(draw_shipmate_menu)
     # del bpy.types.Object.qml_hatch
 

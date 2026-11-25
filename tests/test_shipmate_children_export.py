@@ -78,3 +78,49 @@ with tempfile.TemporaryDirectory(prefix='blender-shipmate-children-') as folder:
     assert 'HoverGrandchild' in exported
 
 print('SHIPMATE_CHILDREN_EXPORT_TESTS_OK')
+
+# Exercise the same parent chain after it is linked from a separate .blend.
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete(use_global=False)
+with tempfile.TemporaryDirectory(prefix='blender-linked-shipmate-children-') as folder:
+    output = Path(folder)
+    collection = bpy.data.collections.new('LinkedControls')
+    mesh = bpy.data.meshes.new('ControlHousingMesh')
+    mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+    housing = bpy.data.objects.new('Housing', mesh)
+    rheostat = bpy.data.objects.new('Rheostat', None)
+    rheostat['qml_type'] = 'Qml.Rheostat'
+    rheostat.parent = housing
+    hover = bpy.data.objects.new('HoverSwitcher', None)
+    hover['qml_type'] = 'Qml.HoverableMatSwitcher'
+    hover.parent = rheostat
+    for obj in [housing, rheostat, hover]:
+        collection.objects.link(obj)
+    library = output / 'library.blend'
+    bpy.data.libraries.write(str(library), {collection})
+    for obj in [housing, rheostat, hover]:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.collections.remove(collection)
+    bpy.data.meshes.remove(mesh)
+    with bpy.data.libraries.load(str(library), link=True) as (_, data):
+        data.collections = ['LinkedControls']
+    linked_collection = data.collections[0]
+    instance = bpy.data.objects.new('LinkedControlsInstance', None)
+    instance.instance_type = 'COLLECTION'
+    instance.instance_collection = linked_collection
+    bpy.context.scene.collection.objects.link(instance)
+    bpy.context.view_layer.update()
+
+    exporter = addon.BalsamExporter(str(output / 'LinkedScene.qml'), settings)
+    assert exporter.export() == {'FINISHED'}
+    qml_files = list(output.glob('*.qml'))
+    assert len(qml_files) >= 2, [path.name for path in qml_files]
+    component = (output / 'LinkedControls.qml').read_text()
+    assert component.index('LM.RheostatButton {') < component.index(
+        'LM.HoverableMaterialSwitcher {'), component
+    rheostat_block = component.split('LM.RheostatButton {', 1)[1].split(
+        'LM.HoverableMaterialSwitcher {', 1)[0]
+    assert 'LM.HoverableMaterialSwitcher' not in rheostat_block
+    assert 'view: parent' in component
+
+print('LINKED_SHIPMATE_CHILDREN_EXPORT_TESTS_OK')

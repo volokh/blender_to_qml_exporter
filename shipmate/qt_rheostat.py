@@ -119,7 +119,7 @@ class OBJECT_OT_add_qml_rheostat(Operator):
 
     value: FloatVectorProperty(
         name="MDM Values",
-        default=(0.0, 0.,0.),
+        default=(0.0, 0., 0.),
         description="Minimum|Default|Maximum value for the rheostat"
     )
 
@@ -231,9 +231,12 @@ class OBJECT_PT_qml_rheostat(Panel):
         layout.prop(obj, '["blocker_visible"]', text='Blocker Visible')
         layout.prop(obj, '["blocker_text"]', text='Blocker Text')
         layout.prop(obj, '["validator"]', text='Validator')
-        layout.prop(obj, 'qml_hatch_step_positive_sound', text='Step Positive Sound')
-        layout.prop(obj, 'qml_hatch_step_negative_sound', text='Step Negative Sound')
-        layout.prop(obj, 'qml_rheostat_sequential_mode', text='Sequential Mode')
+        layout.prop(obj, 'qml_hatch_step_positive_sound',
+                    text='Step Positive Sound')
+        layout.prop(obj, 'qml_hatch_step_negative_sound',
+                    text='Step Negative Sound')
+        layout.prop(obj, 'qml_rheostat_sequential_mode',
+                    text='Sequential Mode')
 
 
 '''def menu_func_empty(self, context):
@@ -274,14 +277,18 @@ def qml_rheostat_change_step(obj):
 def qml_rheostat_value(obj):
     return tuple(obj.get("value", (0., 0., 0.)))
 
+
 def qml_rheostat_duration(obj):
     return obj.get("change_duration", 1000.0)
+
 
 def qml_rheostat_step(obj):
     return obj.get("step", 1.0)
 
+
 def qml_rheostat_hover_text(obj):
     return obj.get("hover_text", "")
+
 
 def qml_rheostat_initial_value(obj):
     return obj.get("initial_value", 0.0)
@@ -294,14 +301,18 @@ def qml_rheostat_output_value(obj):
 def qml_rheostat_blocker_visible(obj):
     return obj.get("blocker_visible", None)
 
+
 def qml_rheostat_blocker_text(obj):
     return obj.get("blocker_text", None)
+
 
 def qml_rheostat_validator(obj):
     return obj.get("validator", None)
 
+
 def get_step_pos_sound(obj):
     return obj.get("stepPositiveSound", '')
+
 
 def set_step_pos_sound(obj, value):
     obj["stepPositiveSound"] = value
@@ -328,46 +339,46 @@ def export_qml_rheostat(obj, nid, d, with_object_name=True):
     out_value_ = qml_rheostat_output_value(obj)
     lines = [f'{I(d)}LM.RheostatButton {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d+1)}objectName: '{obj.name}'" if with_object_name else "",
-             f'{I(d+1)}node: parent',
-             f'{I(d+1)}minValue: {value_[0]}',
-             f'{I(d+1)}maxValue: {value_[2]}',
-             f'{I(d+1)}value: {value_[1]}',
-             f'{I(d+1)}step: {qml_rheostat_step(obj)}',
-             f'{I(d+1)}changeStep: Qt.vector3d{qt_pos(qml_rheostat_change_step(obj))}',
-             f'{I(d+1)}changeDuration: {qml_rheostat_duration(obj)}',
-             f'{I(d+1)}initialValue: {qml_rheostat_initial_value(obj)}'
+             f"{I(d + 1)}objectName: '{obj.name}'" if with_object_name else "",
+             f'{I(d + 1)}node: parent',
+             f'{I(d + 1)}minValue: {value_[0]}',
+             f'{I(d + 1)}maxValue: {value_[2]}',
+             f'{I(d + 1)}value: {value_[1]}',
+             f'{I(d + 1)}step: {qml_rheostat_step(obj)}',
+             f'{I(d + 1)}changeStep: Qt.vector3d{qt_pos(qml_rheostat_change_step(obj))}',
+             f'{I(d + 1)}changeDuration: {qml_rheostat_duration(obj)}',
+             f'{I(d + 1)}initialValue: {qml_rheostat_initial_value(obj)}'
              ]
 
     hover_text_ = qml_rheostat_hover_text(obj)
     if hover_text_:
-        lines += [f'{I(d+1)}picker.hoverText: `{hover_text_}`']
+        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text_}`']
 
     if out_value_:
-         lines += [f'{I(d+1)}onValueChanged: {out_value_}']
+        lines += [f'{I(d + 1)}onValueChanged: {out_value_}']
 
     blocker_visible_ = qml_rheostat_blocker_visible(obj)
     if blocker_visible_:
-         lines += [f'{I(d+1)}blocker.visible: {blocker_visible_}']
+        lines += [f'{I(d + 1)}blocker.visible: {blocker_visible_}']
 
     blocker_text_ = qml_rheostat_blocker_text(obj)
     if blocker_text_:
-         lines += [f'{I(d+1)}blocker.text: {blocker_text_}']
+        lines += [f'{I(d + 1)}blocker.text: {blocker_text_}']
 
     validator_ = qml_rheostat_validator(obj)
     if validator_:
-         lines += [f'{I(d+1)}validator: {validator_}']
+        lines += [f'{I(d + 1)}validator: {validator_}']
 
     stepPositiveSound_ = get_step_pos_sound(obj)
     if stepPositiveSound_:
-        lines += [f'{I(d+1)}wheelPositiveSound: "{stepPositiveSound_}"']
+        lines += [f'{I(d + 1)}wheelPositiveSound: "{stepPositiveSound_}"']
 
     stepNegativeSound_ = get_step_neg_sound(obj)
     if stepNegativeSound_:
-        lines += [f'{I(d+1)}wheelNegativeSound: "{stepNegativeSound_}"']
+        lines += [f'{I(d + 1)}wheelNegativeSound: "{stepNegativeSound_}"']
 
     if obj.get("sequentialMode", False):
-        lines += [f'{I(d+1)}sequentialMode: true']
+        lines += [f'{I(d + 1)}sequentialMode: true']
 
     lines += [f'{I(d)}}}']
     return lines
@@ -389,7 +400,7 @@ def qml_rheostat_register():
     bpy.types.Object.qml_hatch_step_negative_sound = StringProperty(
         name="Step Negative Sound", subtype='FILE_PATH', get=get_step_neg_sound, set=set_step_neg_sound)
 
-    #bpy.types.Object.qml_rheostat_step_sound = StringProperty(
+    # bpy.types.Object.qml_rheostat_step_sound = StringProperty(
     #    name="Step Sound", subtype='FILE_PATH', get=get_step_sound, set=set_step_sound)
     bpy.types.Object.qml_rheostat_sequential_mode = BoolProperty(
         name="Sequential Mode", get=get_sequential_mode, set=set_sequential_mode)
@@ -410,7 +421,6 @@ def qml_rheostat_unregister():
 
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
 
 
 if __name__ == "__main__":

@@ -130,7 +130,8 @@ MESH_DATA_FILE_ID = 3365961549   # MeshDataHeader::FILE_ID
 # latest (supports morph split, LODs, lightmaps)
 MESH_DATA_FILE_VERSION = 7
 
-LOD_CAMERA_RANGES = (500.0, 2000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0)
+LOD_CAMERA_RANGES = (500.0, 2000.0, 5000.0, 10000.0,
+                     20000.0, 50000.0, 100000.0)
 LOD_REFERENCE_VERTICAL_FOV_DEGREES = 60.0
 LOD_REFERENCE_VIEWPORT_HEIGHT = 1080.0
 
@@ -277,9 +278,10 @@ def qt_scale(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def qt_rot(e): return (math.degrees(e.x),
-                       math.degrees(e.z),
-                       math.degrees(-e.y))
+def qt_rot(e):
+    return (math.degrees(e.x),
+            math.degrees(e.z),
+            math.degrees(-e.y))
 
 
 def inverse(t):
@@ -360,11 +362,13 @@ def material_id_for_name(mat):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def collect_mesh(obj, convert_coords, cloth_pin_group=None, export_tangents=False):  # , depsgraph, apply_modifiers=True):
+# , depsgraph, apply_modifiers=True):
+def collect_mesh(obj, convert_coords, cloth_pin_group=None, export_tangents=False):
     # eval_obj = obj.evaluated_get(depsgraph) if apply_modifiers else obj
     mesh = obj.to_mesh()
     if mesh is None:
-        raise ValueError(f"Object '{obj.name}' of type '{obj.type}' did not produce mesh geometry")
+        raise ValueError(f"Object '{obj.name}' of type '{
+                         obj.type}' did not produce mesh geometry")
     mesh.calc_loop_triangles()
 
     color_attr = None
@@ -435,7 +439,8 @@ def collect_mesh(obj, convert_coords, cloth_pin_group=None, export_tangents=Fals
             else:
                 color_values.append(
                     (float(color[0]), float(color[1]), float(color[2]), 1.0))
-    pin_group = obj.vertex_groups.get(cloth_pin_group) if cloth_pin_group else None
+    pin_group = obj.vertex_groups.get(
+        cloth_pin_group) if cloth_pin_group else None
     has_cloth_pins = pin_group is not None
     has_color = color_values is not None or has_cloth_pins
 
@@ -524,9 +529,11 @@ def collect_mesh(obj, convert_coords, cloth_pin_group=None, export_tangents=Fals
                     vdata += tan + binorm
 
                 if has_color:
-                    col_ = color_values[loop_index] if color_values else (1.0, 1.0, 1.0, 1.0)
+                    col_ = color_values[loop_index] if color_values else (
+                        1.0, 1.0, 1.0, 1.0)
                     if has_cloth_pins:
-                        weight = next((g.weight for g in vert.groups if g.group == pin_group.index), 0.0)
+                        weight = next(
+                            (g.weight for g in vert.groups if g.group == pin_group.index), 0.0)
                         col_ = (*col_[:3], weight)
                     vdata += col_
 
@@ -632,7 +639,8 @@ def _attribute_array(mesh, attr_name, components):
     if offset is None:
         return None
     count = mesh["vertex_count"]
-    raw = np.frombuffer(bytes(mesh["vbuf"]), dtype=np.uint8).reshape(count, mesh["stride"])
+    raw = np.frombuffer(bytes(mesh["vbuf"]), dtype=np.uint8).reshape(
+        count, mesh["stride"])
     values = raw[:, offset:offset + 4 * components].copy().view("<f4")
     return values.reshape(count, components).astype(np.float64)
 
@@ -668,10 +676,12 @@ def manual_lod_sources(obj):
         if value is None:
             continue
         if value.type != 'MESH':
-            problems.append(f"'{obj.name}': {prop_name} must be a mesh object; ignored")
+            problems.append(f"'{obj.name}': {
+                            prop_name} must be a mesh object; ignored")
             continue
         if value == obj or value.data == obj.data:
-            problems.append(f"'{obj.name}': '{prop_name}' points to the object's own mesh; ignored")
+            problems.append(f"'{obj.name}': '{
+                            prop_name}' points to the object's own mesh; ignored")
             continue
         sources[level] = value
     return sources, problems
@@ -716,10 +726,12 @@ def _custom_lod_distances(obj, warnings):
     try:
         distances = [float(d) if d is not None else None for d in value]
     except (TypeError, ValueError):
-        warnings.append(f"'{obj.name}': LOD distance overrides must be numbers; ignored")
+        warnings.append(
+            f"'{obj.name}': LOD distance overrides must be numbers; ignored")
         return None
     if any(d is not None and (not math.isfinite(d) or d < 0.0) for d in distances):
-        warnings.append(f"'{obj.name}': LOD distance overrides must be finite and non-negative; ignored")
+        warnings.append(
+            f"'{obj.name}': LOD distance overrides must be finite and non-negative; ignored")
         return None
     return distances
 
@@ -747,7 +759,8 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
     combined_indices = list(base_indices)
     combined_vbuf = bytearray(base["vbuf"])
     vertex_total = base["vertex_count"]
-    generated_specs = [{"level": level} for level in range(1, (generated_top or 0) + 1)]
+    generated_specs = [{"level": level}
+                       for level in range(1, (generated_top or 0) + 1)]
     base_material_indices = {s["mat_idx"] for s in base["subsets_data"]}
 
     subsets = []
@@ -776,7 +789,8 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
             problem = "vertex attributes differ from LOD0 (UV2/tangents/colors must match)"
         if problem is not None:
             fallback = "generated LOD used instead" if level in generated_by_level else "skipped"
-            warnings.append(f"LOD{level} '{source_name}' {problem}; {fallback}")
+            warnings.append(f"LOD{level} '{source_name}' {
+                            problem}; {fallback}")
             continue
 
         lod_subsets = {s["mat_idx"]: s for s in geometry["subsets_data"]}
@@ -800,15 +814,18 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
                 per_subset.append(None)
                 continue
             start = source_subset["subset_start"]
-            lod_tris = triangles_from_flat(geometry["indices"][start:start + source_subset["icount"]])
+            lod_tris = triangles_from_flat(
+                geometry["indices"][start:start + source_subset["icount"]])
             local = [i for tri in lod_tris for i in tri]
             per_subset.append(([i + vertex_base for i in local], 0.0))
         level_data[level] = per_subset
 
     distance_scale = float((lod_options or {}).get("distance_scale", 1.0))
-    custom = _custom_lod_distances(obj, warnings) if (lod_options or {}).get("custom_distances") else None
+    custom = _custom_lod_distances(obj, warnings) if (
+        lod_options or {}).get("custom_distances") else None
     use_meshoptimizer = bool((lod_options or {}).get("use_meshoptimizer"))
-    camera_ranges = bool((lod_options or {}).get("camera_ranges", True) or use_meshoptimizer)
+    camera_ranges = bool((lod_options or {}).get(
+        "camera_ranges", True) or use_meshoptimizer)
     generated = {}
     if generated_specs:
         angles = lod_normal_angles(lod_options)
@@ -818,10 +835,12 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
         generated, new_vertices = lod_generator(
             base_points, normals, ranges, base_indices, generated_top, vertex_total, angles,
             capped=bool((lod_options or {}).get("vertex_caps")), warnings=warnings)
-        level_data.update({level: entries for level, entries in generated.items() if level not in manual_geometry})
+        level_data.update({level: entries for level, entries in generated.items(
+        ) if level not in manual_geometry})
         if new_vertices:
             normal_offset = _attribute_offset(base, ATTR_NORMAL)
-            combined_vbuf.extend(_split_vertex_bytes(base, normal_offset, new_vertices))
+            combined_vbuf.extend(_split_vertex_bytes(
+                base, normal_offset, new_vertices))
             vertex_total += len(new_vertices)
 
     if not camera_ranges and manual_geometry and max(manual_geometry) > (generated_top or 0):
@@ -829,7 +848,8 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
         normals = _attribute_array(base, ATTR_NORMAL, 3)
         ranges = [(s["subset_start"], s["icount"]) for s in subsets]
         generated, _ = build_generated_lods(
-            base_points, normals, ranges, base_indices, max(manual_geometry), base["vertex_count"], angles,
+            base_points, normals, ranges, base_indices, max(
+                manual_geometry), base["vertex_count"], angles,
             capped=bool((lod_options or {}).get("vertex_caps")), warnings=warnings)
 
     for per_subset in level_data.values():
@@ -837,7 +857,8 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
             if entry is not None and not entry[0]:
                 per_subset[index] = None
 
-    largest_subset = max(range(len(subsets)), key=lambda index: subsets[index]["icount"], default=None)
+    largest_subset = max(
+        range(len(subsets)), key=lambda index: subsets[index]["icount"], default=None)
     camera_depths = []
     if camera_ranges:
         for index in range(max(level_data, default=0)):
@@ -863,7 +884,8 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
                 if reference is None and generated_entries is not None and largest_subset is not None:
                     reference = generated_entries[largest_subset]
                 if reference is None:
-                    distance = _camera_lod_distance(LOD_CAMERA_RANGES[level - 1])
+                    distance = _camera_lod_distance(
+                        LOD_CAMERA_RANGES[level - 1])
                     warnings.append(f"{subset['sname']}: LOD{level} has no automatic simplification "
                                     "distance; using the camera range instead")
                 else:
@@ -887,13 +909,18 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
                 # Nothing for this subset at this level: repeat the previous range (LOD0 for LOD1) so the
                 # reader's record position still lines up with the level number. Its distance
                 # is the next real level's, so Qt never picks the repeat before that level is due.
-                nxt = min((k for k in level_data if k > level and level_data[k][index] is not None), default=None)
-                fill = float(level_data[nxt][index][1]) if nxt is not None else 0.0
-                fill = max(fill, previous["distance"] if previous is not None else 0.0)
+                nxt = min((k for k in level_data if k >
+                          level and level_data[k][index] is not None), default=None)
+                fill = float(level_data[nxt][index][1]
+                             ) if nxt is not None else 0.0
+                fill = max(fill, previous["distance"]
+                           if previous is not None else 0.0)
                 if previous is not None:
-                    source_range = {"count": previous["count"], "offset": previous["offset"]}
+                    source_range = {
+                        "count": previous["count"], "offset": previous["offset"]}
                 else:
-                    source_range = {"count": subset["icount"], "offset": subset["subset_start"]}
+                    source_range = {
+                        "count": subset["icount"], "offset": subset["subset_start"]}
                 lods.append({**source_range, "distance": fill})
                 continue
 
@@ -901,12 +928,14 @@ def _combine_lods(obj, apply_modifiers: bool, convert_coords: bool, manual_lods,
             if custom is not None and previous is not None and distance < previous["distance"]:
                 warnings.append(f"{subset['sname']}: LOD{level} distance is less than the preceding "
                                 "LOD; clamped to the preceding distance")
-            distance = max(float(distance), previous["distance"] if previous is not None else 0.0)
+            distance = max(
+                float(distance), previous["distance"] if previous is not None else 0.0)
             offset = 0
             if lod_ids:
                 offset = len(combined_indices)
                 combined_indices.extend(lod_ids)
-            lods.append({"count": len(lod_ids), "offset": offset, "distance": distance})
+            lods.append(
+                {"count": len(lod_ids), "offset": offset, "distance": distance})
 
     ibuf, idx_comp_type = _pack_indices(combined_indices)
     base["vbuf"] = bytes(combined_vbuf)
@@ -941,7 +970,8 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
     use_evaluated_object = apply_modifiers or obj.type != 'MESH'
     eval_obj = obj.evaluated_get(depsgraph) if use_evaluated_object else obj
 
-    cloth = next((m for m in getattr(obj, 'modifiers', ()) if m.type == 'CLOTH' and m.show_render), None)
+    cloth = next((m for m in getattr(obj, 'modifiers', ())
+                 if m.type == 'CLOTH' and m.show_render), None)
     pin_group = cloth.settings.vertex_group_mass if cloth else None
     mesh_ = collect_mesh(eval_obj, convert_coords, pin_group, export_tangents)
     '''
@@ -983,7 +1013,7 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
         offset += ncomp * 4
 
     add_attr(ATTR_POSITION, 3)
-    add_attr(ATTR_NORMAL,   3)
+    add_attr(ATTR_NORMAL, 3)
 
     has_uv = mesh_['has_uv0']
     if has_uv:
@@ -1013,14 +1043,14 @@ def extract_mesh_data(obj, apply_modifiers: bool, convert_coords: bool, lod_spec
         obj.to_mesh_clear()
 
     return {
-        "entries":      entries,
-        "stride":       offset,
-        "vbuf":         mesh_['vertices'],
-        "ibuf":         ibuf,
-        "index_type":   idx_comp_type_,
-        "index_count":  idx_count_,
+        "entries": entries,
+        "stride": offset,
+        "vbuf": mesh_['vertices'],
+        "ibuf": ibuf,
+        "index_type": idx_comp_type_,
+        "index_count": idx_count_,
         "vertex_count": mesh_['vertex_count'],
-        'indices':      indices_,
+        'indices': indices_,
         'subsets_data': mesh_['subsets_data'],
         'material_names': mesh_['material_names'],
         'material_slot_indices': mesh_.get('material_slot_indices', []),
@@ -1041,7 +1071,8 @@ def transform_collision_mesh(mesh, linear):
     """
     from mathutils import Vector
     if abs(linear.determinant()) < 1e-12:
-        raise ValueError("Cannot export a collision mesh with a singular transform")
+        raise ValueError(
+            "Cannot export a collision mesh with a singular transform")
     position = next(e for e in mesh['entries'] if e['name'] == ATTR_POSITION)
     points = [linear @ Vector(struct.unpack_from('<3f', mesh['vbuf'],
               i * mesh['stride'] + position['offset'])) for i in range(mesh['vertex_count'])]

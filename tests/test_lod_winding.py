@@ -1,4 +1,5 @@
 """Run with python3 tests/test_lod_winding.py."""
+import qt_simplifier
 import sys
 import importlib.util
 import unittest
@@ -9,7 +10,6 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import qt_simplifier
 
 
 def grid_data(subdivisions=8):
@@ -57,6 +57,7 @@ class LodWindingTests(unittest.TestCase):
 
     def test_vertex_capped_reduction_keeps_source_winding(self):
         points, normals, indices = grid_data()
+
         def reverse_simplification(source_indices, _positions, target_index_count):
             first_triangle = source_indices[:3]
             reversed_triangle = [first_triangle[0], first_triangle[2], first_triangle[1]]

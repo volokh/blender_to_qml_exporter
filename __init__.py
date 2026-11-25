@@ -11,7 +11,7 @@ from .qt_mesh_validate import validate_qt_mesh
 from .qt_simplifier import MAX_LOD_LEVEL
 from .qt_lod_settings import active_lod_settings, lod_settings_register, lod_settings_unregister
 from .qt_bsdf_mat_importer import mat_to_quick3d
-from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate
+from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate, shipmate_custom_property_names
 from .shipmate.qt_step_sound import export_speaker
 from .shipmate.qt_property_animation import is_qml_property_animation
 from mathutils import Vector, Euler
@@ -29,6 +29,13 @@ import hashlib
 from mathutils import Matrix
 
 MESH_EXPORT_OBJECT_TYPES = {'MESH', 'CURVE', 'SURFACE', 'FONT'}
+QML_RESERVED_NAMES = frozenset((
+    'as await break case catch class component const continue debugger default '
+    'delete do else enum export extends false finally for function if implements '
+    'import in instanceof interface let new null of on package pragma private '
+    'property protected public readonly required return signal static super '
+    'switch this throw true try typeof var void while with yield'
+).split())
 
 bl_info = {
     "name": "Qt Quick 3D Balsam Exporter Plugin",
@@ -110,12 +117,28 @@ SUBSET_STRUCT_SIZE_V6 = 52
 # ─────────────────────────────────────────────────────────────────
 
 
-def _u32(v): return struct.pack(LE + 'I', int(v))
-def _u16(v): return struct.pack(LE + 'H', int(v))
-def _u64(v): return struct.pack(LE + 'Q', int(v))
-def _f32(v): return struct.pack(LE + 'f', float(v))
-def _utf16(s): return s.encode('utf-16le')
-def uses_logic_module(text): return re.search(r'\bLM\.', text) is not None
+def _u32(v):
+    return struct.pack(LE + 'I', int(v))
+
+
+def _u16(v):
+    return struct.pack(LE + 'H', int(v))
+
+
+def _u64(v):
+    return struct.pack(LE + 'Q', int(v))
+
+
+def _f32(v):
+    return struct.pack(LE + 'f', float(v))
+
+
+def _utf16(s):
+    return s.encode('utf-16le')
+
+
+def uses_logic_module(text):
+    return re.search(r'\bLM\.', text) is not None
 
 
 AXIS_FIX = Matrix((
@@ -168,7 +191,8 @@ def qt_local_trs(obj, convert_coords=True):
     # Matrix decomposition cannot recover the user's original scale signs.
     # Select those signs, then compensate the rotation by the SAME axis flips.
     # Changing only scale (the old qt_local_trs_ helper) changes the transform.
-    preferred = [_sign_component(v) for v in qt_local_signed_scale(obj, convert_coords)]
+    preferred = [_sign_component(v)
+                 for v in qt_local_signed_scale(obj, convert_coords)]
     flips = [_sign_component(scale[i]) * preferred[i] for i in range(3)]
     if math.prod(flips) < 0.0:
         # A parent inverse/constraint can introduce reflection not present in
@@ -185,7 +209,8 @@ def qt_local_trs(obj, convert_coords=True):
     rotation_matrix = rot.to_matrix() @ Matrix.Diagonal(Vector(flips))
     eul = rotation_matrix.to_euler('ZXY')  # Qt Quick 3D Node rotation order.
     signed_scale = tuple(abs(scale[i]) * preferred[i] for i in range(3))
-    angles = tuple(0.0 if abs(math.degrees(v)) < 1e-5 else math.degrees(v) for v in eul)
+    angles = tuple(0.0 if abs(math.degrees(v)) <
+                   1e-5 else math.degrees(v) for v in eul)
     return tuple(loc), angles, signed_scale
 
 
@@ -251,9 +276,10 @@ def qt_scale(value):
     return (value_[0], value_[2], value_[1])
 
 
-def qt_rot(e): return (math.degrees(e.x),
-                       math.degrees(e.z),
-                       math.degrees(-e.y))
+def qt_rot(e):
+    return (math.degrees(e.x),
+            math.degrees(e.z),
+            math.degrees(-e.y))
 
 
 def inverse(t):
@@ -331,7 +357,8 @@ def never_mirror_frames(parent_linear, reference_linear, local_linear, position)
     try:
         correction = np.linalg.solve(parent, reference) @ np.linalg.inv(local)
     except np.linalg.LinAlgError as exc:
-        raise ValueError("neverMirror requires nonzero object and ancestor scales") from exc
+        raise ValueError(
+            "neverMirror requires nonzero object and ancestor scales") from exc
     if np.allclose(correction, np.eye(3), rtol=0, atol=1e-6):
         return None
     outer, scales, inner = np.linalg.svd(correction)
@@ -351,20 +378,25 @@ def wrap_never_mirror(blocks, depth, name, frames, with_object_name=True):
     if frames is None or not blocks:
         return blocks
     position, outer, scale, inner_position, inner = frames
+
     def vec(v):
         return "Qt.vector3d(" + ", ".join(format(float(x), ".9g") for x in v) + ")"
+
     def quat(rows):
         q = Matrix(rows).to_quaternion()
         return "Qt.quaternion(" + ", ".join(format(float(x), ".9g") for x in q) + ")"
     indent = "    " * depth
     lines = [indent + "Node {", indent + "    // neverMirror: restore shape; keep the mirrored world origin.",
-             indent + "    objectName: " + json.dumps(name + ".neverMirror") if with_object_name else "",
+             indent + "    objectName: " +
+             json.dumps(name + ".neverMirror") if with_object_name else "",
              indent + "    position: " + vec(position),
              indent + "    rotation: " + quat(outer),
              indent + "    scale: " + vec(scale),
-             indent + "    Node {", indent + "        position: " + vec(inner_position),
+             indent + "    Node {", indent +
+             "        position: " + vec(inner_position),
              indent + "        rotation: " + quat(inner)]
-    lines.extend("        " + line for block in blocks for line in block.splitlines())
+    lines.extend(
+        "        " + line for block in blocks for line in block.splitlines())
     lines.extend([indent + "    }", indent + "}"])
     return ["\n".join(lines)]
 
@@ -374,7 +406,8 @@ def restoration_component_suffix(actual_world, reference_world):
     try:
         correction = actual_world.to_3x3().inverted() @ reference_world.to_3x3()
     except ValueError as exc:
-        raise ValueError("neverMirror requires nonzero ancestor scales") from exc
+        raise ValueError(
+            "neverMirror requires nonzero ancestor scales") from exc
     values = [0.0 if abs(correction[r][c]) < 1e-6 else float(correction[r][c])
               for r in range(3) for c in range(3)]
     if all(abs(values[r * 3 + c] - (1.0 if r == c else 0.0)) < 1e-6
@@ -416,14 +449,14 @@ def material_id_for_name(name, mirror_info=None, material_lib=None):
 # ─────────────────────────────────────────────────────────────────
 
 _LIGHT_MAP = {'POINT': 'PointLight', 'SUN': 'DirectionalLight',
-              'SPOT': 'SpotLight',   'AREA': 'AreaLight'}
+              'SPOT': 'SpotLight', 'AREA': 'AreaLight'}
 
 
 def light_qml(obj, d=2, convert_coords=False, with_object_name=True):
     l = obj.data
     t = _LIGHT_MAP.get(l.type, 'PointLight')
     ind = "    " * d
-    ind1 = "    " * (d+1)
+    ind1 = "    " * (d + 1)
     pos, rot, sc = qt_local_trs(obj, convert_coords)
     # pos = qt_pos(obj.location)
     # rot = qt_rot(obj.rotation_euler)
@@ -437,7 +470,7 @@ def light_qml(obj, d=2, convert_coords=False, with_object_name=True):
              f"{ind1}brightness: {l.energy:.4f}"]
     if l.type == 'SPOT':
         lines += [f"{ind1}coneAngle: {math.degrees(l.spot_size):.4f}",
-                  f"{ind1}innerConeAngle: {math.degrees(l.spot_size*(1-l.spot_blend)):.4f}"]
+                  f"{ind1}innerConeAngle: {math.degrees(l.spot_size * (1 - l.spot_blend)):.4f}"]
     if l.use_shadow:
         lines.append(f"{ind1}castsShadow: true")
     lines.append(f"{ind}}}")
@@ -447,7 +480,7 @@ def light_qml(obj, d=2, convert_coords=False, with_object_name=True):
 def camera_qml(obj, d=2, convert_coords=False, with_object_name=True):
     cam = obj.data
     ind = "    " * d
-    ind1 = "    " * (d+1)
+    ind1 = "    " * (d + 1)
     pos, rot, sc = qt_local_trs(obj, convert_coords)
     # pos = qt_pos(obj.location)
     # rot = qt_rot(obj.rotation_euler)
@@ -481,20 +514,20 @@ def anim_qml(scene, node_ids, d=2):
     s, e = scene.frame_start, scene.frame_end
     def I(n): return "    " * n
     lines = [f"{I(d)}Timeline {{",
-             f"{I(d+1)}id: timeline",
-             f"{I(d+1)}startFrame: {s}", f"{I(d+1)}endFrame: {e}",
-             f"{I(d+1)}enabled: true",
-             f"{I(d+1)}animations: [",
-             f"{I(d+2)}TimelineAnimation {{",
-             f"{I(d+3)}duration: {int((e-s)/fps*1000)}",
-             f"{I(d+3)}from: {s}", f"{I(d+3)}to: {e}",
-             f"{I(d+3)}running: true", f"{I(d+3)}loops: Animation.Infinite",
-             f"{I(d+2)}}}", f"{I(d+1)}]", ""]
+             f"{I(d + 1)}id: timeline",
+             f"{I(d + 1)}startFrame: {s}", f"{I(d + 1)}endFrame: {e}",
+             f"{I(d + 1)}enabled: true",
+             f"{I(d + 1)}animations: [",
+             f"{I(d + 2)}TimelineAnimation {{",
+             f"{I(d + 3)}duration: {int((e - s) / fps * 1000)}",
+             f"{I(d + 3)}from: {s}", f"{I(d + 3)}to: {e}",
+             f"{I(d + 3)}running: true", f"{I(d + 3)}loops: Animation.Infinite",
+             f"{I(d + 2)}}}", f"{I(d + 1)}]", ""]
 
     prop_map = {
-        'location':       ('position', lambda v: qt_pos(Vector(v))),
+        'location': ('position', lambda v: qt_pos(Vector(v))),
         'rotation_euler': ('eulerRotation', lambda v: qt_rot(Euler(v, 'XYZ'))),
-        'scale':          ('scale', lambda v: qt_scale(Vector(v))),
+        'scale': ('scale', lambda v: qt_scale(Vector(v))),
     }
 
     for obj in scene.objects:
@@ -514,16 +547,16 @@ def anim_qml(scene, node_ids, d=2):
                                 for kp in fc.keyframe_points))
             if not frames:
                 continue
-            lines += [f"{I(d+1)}KeyframeGroup {{",
-                      f"{I(d+2)}target: {nid}",
-                      f'{I(d+2)}property: "{qt_prop}"']
+            lines += [f"{I(d + 1)}KeyframeGroup {{",
+                      f"{I(d + 2)}target: {nid}",
+                      f'{I(d + 2)}property: "{qt_prop}"']
             for fr in frames:
                 vals = [idx_map[ax].evaluate(fr) if ax in idx_map else 0.0
                         for ax in range(3)]
                 qv = conv(vals)
-                lines.append(f"{I(d+3)}Keyframe {{ frame: {fr}; "
+                lines.append(f"{I(d + 3)}Keyframe {{ frame: {fr}; "
                              f"value: Qt.vector3d({qv[0]:.4f},{qv[1]:.4f},{qv[2]:.4f}) }}")
-            lines += [f"{I(d+1)}}}", ""]
+            lines += [f"{I(d + 1)}}}", ""]
 
     lines.append(f"{I(d)}}}")
     return "\n".join(lines)
@@ -594,12 +627,59 @@ def renderable_collection_objects(collection):
     return objects
 
 
+def custom_property_value(value):
+    if isinstance(value, IDPropertyGroup):
+        return {key: custom_property_value(item) for key, item in value.items()}
+    if isinstance(value, IDPropertyArray):
+        return value.to_list()
+    return value
+
+
+def custom_properties(obj):
+    rna = getattr(obj, 'bl_rna', None)
+    runtime_names = ({prop.identifier for prop in rna.properties if prop.is_runtime}
+                     if rna else set())
+    return {
+        key: custom_property_value(value)
+        for key, value in obj.items()
+        if key not in {'_RNA_UI', '_qt_balsam_qml_expressions'} and key not in runtime_names
+        and not (key == 'booleans' and isinstance(value, IDPropertyGroup))
+    }
+
+
+def custom_qml_value(value, object_name):
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError(f"{object_name}: QML expression cannot be empty")
+        return value
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{object_name}: custom property value cannot be emitted as QML: {error}") from error
+    return f'({encoded})' if isinstance(value, dict) else encoded
+
+
+def custom_qml_type(value, object_name, property_name, report):
+    if isinstance(value, bool):
+        return 'bool'
+    if isinstance(value, int):
+        if -(2 ** 31) <= value < 2 ** 31:
+            return 'int'
+        report({'WARNING'}, f"{object_name}: integer override "
+               f"{property_name!r} is outside QML int range; using var")
+    elif isinstance(value, float):
+        return 'real'
+    return 'var'
+
+
 class BalsamExporter:
     def __init__(self, filepath, settings, with_object_name=None):
         self.root = Path(filepath).parent
         self.qml_path = Path(filepath)
         self.s = settings
-        self.with_object_name = bool(getattr(settings, "with_object_name", True) if with_object_name is None else with_object_name)
+        self.with_object_name = bool(getattr(
+            settings, "with_object_name", True) if with_object_name is None else with_object_name)
 
         self.s.report({"INFO"}, f"Working directory: '{self.root}'")
         self.mesh_dir = self.root / "meshes"
@@ -618,10 +698,12 @@ class BalsamExporter:
         self._collection_components = {}
         self._collection_component_names = {}
         self._active_collection_materials = []
-        self._instance_path = []
-        self._instance_property_suffix = ''
         self._instance_target_properties = {}
         self._instance_property_sources = {}
+        self._instance_authored_sources = {}
+        self._object_property_sources = {}
+        self._collection_instance_qml_schemas = {}
+        self._written_collection_instance_components = set()
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
         self.uses_physics = False
@@ -629,25 +711,76 @@ class BalsamExporter:
 
     @contextmanager
     def _collection_instance_properties(self, instance):
-        def copy_value(value):
-            if isinstance(value, IDPropertyGroup):
-                return {key: copy_value(item) for key, item in value.items()}
-            if isinstance(value, IDPropertyArray):
-                return value.to_list()
-            return value
+        def set_value(member, key, value):
+            # Blender may reject dict assignment into an existing group.
+            # Recreate it so overrides replace the whole value instead of merging.
+            if key in member and (isinstance(member[key], IDPropertyGroup)
+                                  or isinstance(value, dict)):
+                del member[key]
+            member[key] = value
 
-        source = self._instance_property_sources.get(instance, instance)
-        properties = {key: copy_value(value) for key, value in source.items()
-                      if key != '_RNA_UI'}
+        def qml_property_name(key, target=None):
+            if target is not None:
+                return f'override_{sanitize(target)}_{sanitize(key)}'
+            reserved = {
+                'children', 'data', 'default', 'eulerRotation', 'id', 'objectName',
+                'enabled', 'opacity', 'parent', 'position', 'property', 'rotation', 'scale',
+                'visible', 'x', 'y', 'z',
+            }
+            if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key) and key not in reserved:
+                return key
+            return f'override_{sanitize(key)}'
+
+        def qml_value(value):
+            return custom_qml_value(value, instance.name)
+
+        def append_qml_properties(global_values, targeted_values):
+            result = [
+                {
+                    'target': None, 'property': key,
+                    'qml_name': qml_property_name(key), 'value': value,
+                }
+                for key, value in global_values.items()
+            ]
+            result.extend(
+                {
+                    'target': target, 'property': property_name,
+                    'qml_name': qml_property_name(property_name, target),
+                    'value': value,
+                }
+                for target, values in targeted_values.items()
+                for property_name, value in values.items()
+            )
+            used_names = set()
+            for prop in result:
+                prop['qml_type'] = custom_qml_type(
+                    prop['value'], instance.name, prop['property'], self.s.report)
+                name = prop['qml_name']
+                if name in used_names:
+                    identity = f"{prop['target'] or ''}.{prop['property']}"
+                    name += '_' + hashlib.sha256(
+                        identity.encode('utf-8')).hexdigest()[:8]
+                    prop['qml_name'] = name
+                used_names.add(prop['qml_name'])
+            return result
+
+        source = self._instance_property_sources.get(instance)
+        properties = source if source is not None else custom_properties(instance)
+        authored = self._instance_authored_sources.get(instance)
+        if authored is None:
+            authored = properties
         global_properties = {}
         targeted_properties = {}
         for key, value in properties.items():
+            if key.startswith('self.'):
+                continue
             if '.' not in key:
                 global_properties[key] = value
                 continue
             target, property_name = key.split('.', 1)
             if not target or not property_name:
-                raise ValueError(f"{instance.name}: invalid object-property override {key!r}")
+                raise ValueError(
+                    f"{instance.name}: invalid object-property override {key!r}")
             targeted_properties.setdefault(target, {})[property_name] = value
 
         if targeted_properties:
@@ -671,44 +804,100 @@ class BalsamExporter:
 
         original_targets = self._instance_target_properties
         original_sources = self._instance_property_sources
+        original_authored_sources = self._instance_authored_sources
+        original_object_sources = self._object_property_sources
         self._instance_property_sources = dict(original_sources)
-        effective_targets = {name: dict(values) for name, values in targeted_properties.items()}
+        self._instance_authored_sources = dict(original_authored_sources)
+        self._object_property_sources = dict(original_object_sources)
+        effective_targets = {name: dict(values)
+                             for name, values in targeted_properties.items()}
         for name, values in original_targets.items():
             effective_targets.setdefault(name, {}).update(values)
+        qml_properties = append_qml_properties(
+            global_properties, effective_targets)
+        instance_properties = []
+        for prop in qml_properties:
+            key = (f'{prop["target"]}.{prop["property"]}'
+                   if prop['target'] is not None else prop['property'])
+            if key in authored:
+                instance_properties.append({**prop, 'value': authored[key]})
         self._instance_target_properties = effective_targets
-        original_suffix = self._instance_property_suffix
-        self._instance_path.append((
-            instance.library.filepath if instance.library else '', instance.name_full))
         saved = []
         try:
             if properties or effective_targets:
-                identity = json.dumps(self._instance_path)
-                self._instance_property_suffix = '_Props_' + hashlib.sha256(
-                    identity.encode('utf-8')).hexdigest()[:12]
                 for member in instance.instance_collection.all_objects:
+                    self._object_property_sources.setdefault(
+                        member, custom_properties(member))
                     if member.instance_type == 'COLLECTION' and member.instance_collection:
-                        source = {key: copy_value(value) for key, value in member.items()}
+                        source = custom_properties(member)
+                        self._instance_authored_sources[member] = dict(source)
                         source.update(global_properties)
                         self._instance_property_sources[member] = source
                     overrides = dict(global_properties)
                     overrides.update(effective_targets.get(member.name, {}))
-                    original = {key: copy_value(member[key])
+                    original = {key: custom_property_value(member[key])
                                 for key in overrides if key in member}
                     saved.append((member, original, overrides))
                     for key, value in overrides.items():
-                        member[key] = value
-            yield self._instance_property_suffix
+                        set_value(member, key, value)
+            yield qml_properties, qml_value, instance_properties
         finally:
             for member, original, overrides in reversed(saved):
                 for key in overrides:
                     if key in original:
-                        member[key] = original[key]
+                        set_value(member, key, original[key])
                     elif key in member:
                         del member[key]
-            self._instance_path.pop()
-            self._instance_property_suffix = original_suffix
             self._instance_target_properties = original_targets
             self._instance_property_sources = original_sources
+            self._instance_authored_sources = original_authored_sources
+            self._object_property_sources = original_object_sources
+
+    def _prepare_collection_instance_qml_schemas(self, scene):
+        schemas = {}
+
+        def visit(instance, collection_path):
+            collection = instance.instance_collection
+            if collection is None or collection in collection_path:
+                return
+            with self._collection_instance_properties(instance) as (
+                    qml_properties, _qml_value, _instance_properties):
+                schema = schemas.setdefault(collection, {})
+                for prop in qml_properties:
+                    key = (prop['target'] or '', prop['property'], prop['qml_name'])
+                    current = schema.get(key)
+                    if current is None:
+                        schema[key] = {**prop, 'value': None,
+                                       'source_types': {prop['qml_type']}}
+                    else:
+                        types = current['source_types']
+                        old_types = set(types)
+                        types.add(prop['qml_type'])
+                        if types <= {'int', 'real'}:
+                            current['qml_type'] = 'real' if 'real' in types else 'int'
+                        elif len(types) > 1:
+                            if len(old_types) == 1:
+                                self.s.report(
+                                    {'WARNING'},
+                                    f"{collection.name}: incompatible override types for "
+                                    f"{prop['qml_name']!r}: {', '.join(sorted(types))}; using var")
+                            current['qml_type'] = 'var'
+
+                next_path = collection_path | {collection}
+                for member in collection.all_objects:
+                    if member.instance_type == 'COLLECTION' and member.instance_collection:
+                        visit(member, next_path)
+
+        for instance in scene.objects:
+            if instance.instance_type == 'COLLECTION' and instance.instance_collection:
+                visit(instance, set())
+
+        self._collection_instance_qml_schemas = {
+            collection: sorted(
+                schema.values(),
+                key=lambda prop: (prop['target'] or '', prop['property']))
+            for collection, schema in schemas.items()
+        }
 
     def _mirror_key(self, mirror_info):
         if not mirror_info:
@@ -724,7 +913,8 @@ class BalsamExporter:
         if not mat:
             return None
 
-        material_id_ = material_id_for_name(mat) + material_variant_suffix(mirror_info)
+        material_id_ = material_id_for_name(
+            mat) + material_variant_suffix(mirror_info)
         material_key = material_id_
         if self._active_collection_materials:
             self._active_collection_materials[-1].add(material_key)
@@ -748,9 +938,12 @@ class BalsamExporter:
                 values[name] = float(value)
         preferred = re.sub(r'_blend$', '', base_id) + '_flag'
         key = preferred
-        signature = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12]
+        signature = hashlib.sha256(json.dumps(
+            values, sort_keys=True).encode()).hexdigest()[:12]
+
         def definition(identifier):
-            lines = ['LM.FlagMaterial {', f'    id: {identifier}', f'    sourceMaterial: {base_id}']
+            lines = ['LM.FlagMaterial {', f'    id: {
+                identifier}', f'    sourceMaterial: {base_id}']
             for name, value in sorted(values.items()):
                 if isinstance(value, tuple):
                     encoded = f'Qt.vector3d{value}'
@@ -781,7 +974,8 @@ class BalsamExporter:
         if not self.s.generate_lods:
             return None
         limit = self.s.generate_lod_count
-        settings = active_lod_settings(obj) if getattr(self.s, 'manual_lods', False) else None
+        settings = active_lod_settings(obj) if getattr(
+            self.s, 'manual_lods', False) else None
         if settings is not None and settings.use_max:
             return min(settings.max_levels, limit)
         return limit
@@ -829,7 +1023,8 @@ class BalsamExporter:
             return {'result': False}
 
         # mesh_name = bpy.path.clean_name(obj.name)
-        cloth_info = cloth_metadata(mesh_data_) if cloth_modifier(obj) else None
+        cloth_info = cloth_metadata(
+            mesh_data_) if cloth_modifier(obj) else None
         if cloth_info:
             # GPU wind displacement must remain inside the mesh/shadow culling bounds.
             padding = cloth_info['flagWidth'] * 3.0
@@ -838,7 +1033,8 @@ class BalsamExporter:
                 subset['bmax'] = tuple(v + padding for v in subset['bmax'])
         write_mesh_file(mesh_data_, filepath)  # , subset_name=mesh_name)
         self.s.report({"INFO"}, f"{mesh_data_['vertex_count']} verts, "
-                      f"{mesh_data_['index_count'] // 3} tris, entries: {len(mesh_data_['entries'])} → {filepath}"
+                      f"{mesh_data_[
+                          'index_count'] // 3} tris, entries: {len(mesh_data_['entries'])} → {filepath}"
                       )
 
         # validate_report_ = validate_qt_mesh(filepath)
@@ -857,11 +1053,14 @@ class BalsamExporter:
         values = tuple(float(linear[i][j]) for i in range(3) for j in range(3))
         key = (source, values)
         if key not in self.collision_meshes:
-            digest = hashlib.sha256(struct.pack('<9f', *values)).hexdigest()[:12]
+            digest = hashlib.sha256(struct.pack(
+                '<9f', *values)).hexdigest()[:12]
             suffix = 'mirrored' if linear.determinant() < 0.0 else 'collision'
             base = Path(source)
-            relative = str(base.with_name(f'{base.stem}_{suffix}_{digest}.mesh'))
-            data = extract_mesh_data(obj, self.s.apply_modifiers, self.s.convert_coords)
+            relative = str(base.with_name(
+                f'{base.stem}_{suffix}_{digest}.mesh'))
+            data = extract_mesh_data(
+                obj, self.s.apply_modifiers, self.s.convert_coords)
             data = transform_collision_mesh(data, linear)
             write_mesh_file(data, str(self.root / relative))
             self.collision_meshes[key] = relative
@@ -881,7 +1080,8 @@ class BalsamExporter:
         try:
             data = bytes(packed.data) if packed else path.read_bytes()
         except OSError as error:
-            self.s.report({'WARNING'}, f"Cannot export speaker sound {sound.name}: {error}")
+            self.s.report({'WARNING'}, f"Cannot export speaker sound {
+                          sound.name}: {error}")
             return path.resolve().as_uri()
 
         suffix = re.sub(r"[^A-Za-z0-9.]", "_", path.suffix.lower()) or ".wav"
@@ -889,7 +1089,8 @@ class BalsamExporter:
         key = digest + suffix
 
         if key not in self.exp_sounds:
-            name = re.sub(r'[^A-Za-z0-9_-]', '_', path.stem or sound.name) or "sound"
+            name = re.sub(r'[^A-Za-z0-9_-]', '_',
+                          path.stem or sound.name) or "sound"
             relative = f"sounds/{name}-{digest}{suffix}"
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -897,6 +1098,81 @@ class BalsamExporter:
             self.exp_sounds[key] = relative
 
         return self.exp_sounds[key]
+
+    def _object_custom_properties(self, obj):
+        source = self._object_property_sources.get(obj)
+        return source if source is not None else custom_properties(obj)
+
+    def _apply_object_custom_properties(self, obj, lines):
+        """Merge root members before adding children; each generated member is one entry."""
+        properties = self._object_custom_properties(obj)
+        is_collection = obj.instance_type == 'COLLECTION' and obj.instance_collection
+        shipmate_properties = shipmate_custom_property_names(obj) or set()
+        overrides = {}
+        # Explicit self bindings win when both spellings address the same member.
+        for key, value in sorted(properties.items(), key=lambda item: item[0].startswith('self.')):
+            explicit = key.startswith('self.')
+            if not explicit and key in shipmate_properties:
+                continue
+            if is_collection and not explicit:
+                continue
+            name = key[5:] if explicit else key
+            if not re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', name, re.ASCII):
+                raise ValueError(f"{obj.name}: invalid QML custom property name {key!r}")
+            if not explicit and name == 'id':
+                raise ValueError(f"{obj.name}: use self.id to assign a QML id")
+            overrides[name] = (value, explicit)
+        if not overrides:
+            return lines
+
+        indent = re.match(r'\s*', lines[0]).group() + '    '
+        member_pattern = re.compile(
+            re.escape(indent)
+            + r'(?:(?P<declaration>(?:(?:readonly|required|default)\s+)*property\s+'
+            r'[\w.]+(?:<[\w.]+>)?)\s+)?'
+            r'(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?::|;?\s*$)')
+        result = []
+        found = set()
+        for line in lines:
+            member = member_pattern.match(line)
+            if member is None or member.group('name') not in overrides:
+                result.append(line)
+                continue
+            name = member.group('name')
+            value, explicit = overrides[name]
+            if name in found:
+                continue
+            found.add(name)
+            declaration = member.group('declaration')
+            if declaration and explicit:
+                prefix = f'{declaration} {name}'
+            elif declaration:
+                qml_type = custom_qml_type(value, obj.name, name, self.s.report)
+                prefix = f'{declaration.rsplit(None, 1)[0]} {qml_type} {name}'
+            else:
+                prefix = name
+            result.append(f'{indent}{prefix}: {custom_qml_value(value, obj.name)}')
+
+        additions = []
+        for name, (value, explicit) in overrides.items():
+            if name in found:
+                continue
+            declares_property = (not explicit or (
+                name in properties and name not in shipmate_properties and not is_collection))
+            if not declares_property:
+                prefix = name
+            else:
+                if (not re.fullmatch(r'[a-z_]\w*', name, re.ASCII)
+                        or name in QML_RESERVED_NAMES):
+                    raise ValueError(
+                        f"{obj.name}: {name!r} cannot be declared as a QML property; "
+                        "use self.<name> to assign an existing QML member")
+                declared_value = properties[name] if explicit else value
+                qml_type = custom_qml_type(declared_value, obj.name, name, self.s.report)
+                prefix = f'property {qml_type} {name}'
+            additions.append(f'{indent}{prefix}: {custom_qml_value(value, obj.name)}')
+        result[1:1] = additions
+        return result
 
     def _obj_qml(self, obj, d=2, offset=tuple((0, 0, 0)), instance_matrix=None,
                  export_parent_matrix=None, render_objects=None, reference_parent_matrix=None):
@@ -914,18 +1190,28 @@ class BalsamExporter:
         # library_ = obj.library.name if obj.library else ''
         library_name_ = obj.data.library.name if obj.data and obj.data.library else ''
         data_name_ = obj.data.name if obj.data else ''
-        self.s.report({"INFO"}, f"processing object: {obj.name}, type: {obj.type}, data_name: {data_name_}, instance_type: {obj.instance_type}, has_collection: {obj.instance_collection is not None}, offset: {offset}, cols: {cols_}, library: {library_name_}, hide_render: {hide_render_}")
-
+        self.s.report({"INFO"}, f"processing object: {obj.name}, type: {obj.type}, data_name: {data_name_}, instance_type: {obj.instance_type}, has_collection: {
+                      obj.instance_collection is not None}, offset: {offset}, cols: {cols_}, library: {library_name_}, hide_render: {hide_render_}")
 
         blocks = []
         nid = f"node_{sanitize(obj.name)}"
+        properties = self._object_custom_properties(obj)
+        if 'self.id' in properties:
+            nid = properties['self.id']
+            if (not isinstance(nid, str) or not re.fullmatch(r'[a-z_]\w*', nid, re.ASCII)
+                    or nid in QML_RESERVED_NAMES):
+                raise ValueError(f"{obj.name}: self.id must be an unquoted QML id "
+                                 "starting with a lowercase letter or underscore")
         self.node_ids[obj.name] = nid
-        hosts_property_animation = any(is_qml_property_animation(child) and not child.hide_render for child in obj.children)
+        hosts_property_animation = any(is_qml_property_animation(
+            child) and not child.hide_render for child in obj.children)
+
         def I(n): return "    " * n
 
         pos, rot, sc = qt_local_trs(obj, self.s.convert_coords)
         pos = tuple(map(sum, zip(pos, inverse(offset))))
-        parent_matrix = export_parent_matrix if export_parent_matrix is not None else Matrix.Identity(4)
+        parent_matrix = export_parent_matrix if export_parent_matrix is not None else Matrix.Identity(
+            4)
         local_matrix = (Matrix.Translation(Vector(pos))
                         @ Euler(tuple(math.radians(v) for v in rot), 'ZXY').to_matrix().to_4x4()
                         @ Matrix.Diagonal(Vector((*sc, 1.0))))
@@ -957,20 +1243,25 @@ class BalsamExporter:
 
         if obj.type in MESH_EXPORT_OBJECT_TYPES:
             cloth = cloth_modifier(obj)
-            export_data_name_ = data_name_ if obj.type == 'MESH' else f"{obj.type}_{data_name_}"
-            export_data_name_ += self._instance_property_suffix
+            export_data_name_ = data_name_ if obj.type == 'MESH' else f"{
+                obj.type}_{data_name_}"
             # Repeated instances of the same source object share evaluated
             # geometry. Distinct objects with modifiers may require different
             # meshes even when they use the same Blender mesh datablock.
-            modified = self.s.apply_modifiers and obj.is_modified(bpy.context.scene, 'RENDER')
-            panel_active = bool(getattr(self.s, 'manual_lods', False) and active_lod_settings(obj))
+            modified = self.s.apply_modifiers and obj.is_modified(
+                bpy.context.scene, 'RENDER')
+            panel_active = bool(
+                getattr(self.s, 'manual_lods', False) and active_lod_settings(obj))
             owner = obj if cloth or modified or obj.type != 'MESH' or panel_active else obj.data
-            generated_limit = self._generated_lod_limit(obj) if not cloth else None
+            generated_limit = self._generated_lod_limit(
+                obj) if not cloth else None
             base_key = (obj.type, library_name_, export_data_name_)
             previous = self.mesh_name_owners.setdefault(base_key, owner)
             if previous != owner:
-                identity = f"{obj.library.filepath if obj.library else ''}/{obj.name_full}"
-                suffix = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
+                identity = f"{
+                    obj.library.filepath if obj.library else ''}/{obj.name_full}"
+                suffix = hashlib.sha256(
+                    identity.encode('utf-8')).hexdigest()[:12]
                 export_data_name_ += f'_{suffix}'
 
             if generated_limit is not None and generated_limit != self.s.generate_lod_count:
@@ -978,11 +1269,13 @@ class BalsamExporter:
 
             manual_lods_ = self._manual_lods(obj) if not cloth else []
             if manual_lods_:
-                mesh_key_ = f"{obj.type}/MLOD/{library_name_}/{export_data_name_}"
+                mesh_key_ = f"{
+                    obj.type}/MLOD/{library_name_}/{export_data_name_}"
             else:
                 mesh_key_ = f"{obj.type}/LOD/{library_name_}/{export_data_name_}" if generated_limit and library_name_ != '' else (
                     f"{obj.type}/LOD/{export_data_name_}" if generated_limit else (
-                        f"{obj.type}/{library_name_}/{export_data_name_}" if library_name_ != '' else f'{obj.type}/{export_data_name_}'
+                        f"{obj.type}/{library_name_}/{export_data_name_}" if library_name_ != '' else f'{
+                            obj.type}/{export_data_name_}'
                     )
                 )
 
@@ -1005,10 +1298,11 @@ class BalsamExporter:
                 if self.s.manual_lods and not manual_lods_ and not generated_limit \
                         and custom_lod_distances_value(obj) is not None:
                     self.s.report({"WARNING"}, f"'{obj.name}': LOD distance overrides ignored; no LOD levels "
-                                               f"to attach them to (select LOD objects or enable LOD generation)")
+                                  f"to attach them to (select LOD objects or enable LOD generation)")
                 safe_data_name_ = sanitize(data_name_suffixed_)
                 mp = self.mesh_dir / library_name_ / f"{safe_data_name_}.mesh"
-                source_ = f"meshes/{library_name_}/{safe_data_name_}.mesh" if library_name_ != '' else f"meshes/{safe_data_name_}.mesh"
+                source_ = f"meshes/{library_name_}/{
+                    safe_data_name_}.mesh" if library_name_ != '' else f"meshes/{safe_data_name_}.mesh"
                 result_ = self.extract_and_write_mesh(
                     obj, str(mp),
                     generated_limit,
@@ -1031,7 +1325,8 @@ class BalsamExporter:
             if slot_indices:
                 mat_ids_ = []
                 for slot_index in slot_indices:
-                    mat = obj.material_slots[slot_index].material if slot_index < len(obj.material_slots) else None
+                    mat = obj.material_slots[slot_index].material if slot_index < len(
+                        obj.material_slots) else None
                     material_id_ = (self._ensure_flag_mat(mat, mesh_['cloth'], obj)
                                     if cloth else self._ensure_mat(mat, mirror_info))
                     mat_ids_.append(material_id_ or 'DefaultMaterial')
@@ -1042,25 +1337,30 @@ class BalsamExporter:
                 for slot in obj.material_slots:
                     if slot.material and material_id_for_name(slot.material) in mat_ids_:
                         base_id = material_id_for_name(slot.material)
-                        material_variants[base_id] = self._ensure_flag_mat(slot.material, mesh_['cloth'], obj) if cloth else self._ensure_mat(slot.material, mirror_info)
-                mat_ids_ = [material_variants.get(mid, mid) for mid in mat_ids_]
+                        material_variants[base_id] = self._ensure_flag_mat(slot.material, mesh_[
+                                                                           'cloth'], obj) if cloth else self._ensure_mat(slot.material, mirror_info)
+                mat_ids_ = [material_variants.get(
+                    mid, mid) for mid in mat_ids_]
 
             # mat_ids = self.exp_meshes[obj.name]['material_names']
             rigid_body_ = get_rigid_body(obj)
-            #is_static_rigid_body = is_passive_rigid_body(obj)
-            #baked_static = (rigid_body_ is not None and rigid_body_.type == 'PASSIVE'
+            # is_static_rigid_body = is_passive_rigid_body(obj)
+            # baked_static = (rigid_body_ is not None and rigid_body_.type == 'PASSIVE'
             #                and rigid_body_.collision_shape in {'MESH', 'CONVEX_HULL'})
             model_indent = d + 1 if rigid_body_ is not None else d
             model_type = "LM.Flag" if cloth else "Model"
-            source_value = f'Qt.resolvedUrl({json.dumps(mesh_["source"])})' if cloth else json.dumps(mesh_["source"])
+            source_value = f'Qt.resolvedUrl({json.dumps(
+                mesh_["source"])})' if cloth else json.dumps(mesh_["source"])
             source_property = "meshSource" if cloth else "source"
             model_lines_ = [f"{I(model_indent)}{model_type} {{",
-                     # f"{I(d+1)}id: {nid}",
-                     f'{I(model_indent+1)}objectName: "{obj.name}"' if self.with_object_name else "",
-                     f'{I(model_indent+1)}{source_property}: {source_value}']  # qrc:/{mesh_}
+                            # f"{I(d+1)}id: {nid}",
+                            f'{I(
+                                model_indent + 1)}objectName: "{obj.name}"' if self.with_object_name else "",
+                            # qrc:/{mesh_}
+                            f'{I(model_indent + 1)}{source_property}: {source_value}']
 
             if hosts_property_animation:
-                model_lines_.insert(1, f"{I(model_indent+1)}id: {nid}")
+                model_lines_.insert(1, f"{I(model_indent + 1)}id: {nid}")
 
             if cloth:
                 for name, value in mesh_['cloth'].items():
@@ -1070,42 +1370,55 @@ class BalsamExporter:
                         encoded = str(value).lower()
                     else:
                         encoded = repr(value)
-                    model_lines_.append(f'{I(model_indent+1)}{name}: {encoded}')
+                    model_lines_.append(
+                        f'{I(model_indent + 1)}{name}: {encoded}')
                 for name in ('windStrength', 'windDirection', 'phase'):
                     value = obj.get(name)
                     if isinstance(value, (int, float)) and math.isfinite(value):
-                        model_lines_.append(f'{I(model_indent+1)}{name}: {float(value)}')
+                        model_lines_.append(
+                            f'{I(model_indent + 1)}{name}: {float(value)}')
 
             if rigid_body_ is None:
-                model_lines_.extend([f'{I(model_indent+1)}position: Qt.vector3d{pos}',
-                                     f'{I(model_indent+1)}eulerRotation: Qt.vector3d{rot}',
-                                     f'{I(model_indent+1)}scale: Qt.vector3d{sc}'])
+                model_lines_.extend([f'{I(model_indent + 1)}position: Qt.vector3d{pos}',
+                                     f'{I(model_indent + 1)
+                                        }eulerRotation: Qt.vector3d{rot}',
+                                     f'{I(model_indent + 1)}scale: Qt.vector3d{sc}'])
 
-            #if mirror_info:
+            # if mirror_info:
             #    model_lines_.append(
             #        f"{I(model_indent+1)}property bool shipmateMirroredInstance: {'true' if mirror_info['mirrored'] else 'false'}")
             #    model_lines_.append(
             #        f"{I(model_indent+1)}property vector3d shipmateSignedScale: Qt.vector3d{mirror_info['signed_scale']}")
 
             if not obj.visible_camera:
-                model_lines_.append(f"{I(model_indent+1)}visible: false")
+                model_lines_.append(f"{I(model_indent + 1)}visible: false")
 
             if not obj.visible_shadow:
-                model_lines_.append(f"{I(model_indent+1)}castsShadows: false")
+                model_lines_.append(f"{I(model_indent + 1)}castsShadows: false")
 
-            #if obj.visible_raycast:
+            # if obj.visible_raycast:
             #    model_lines_.append(f"{I(model_indent+1)}pickable: true")
 
-            #if hide_render_:
-            model_lines_.append(f"{I(model_indent+1)}/*hide_render: {hide_render_}*/")
+            # if hide_render_:
+            model_lines_.append(
+                f"{I(model_indent + 1)}/*hide_render: {hide_render_}*/")
             if mat_ids_:
                 model_lines_.append(
-                    f"{I(model_indent+1)}materials: [ {', '.join(mat_ids_)} ]")
+                    f"{I(model_indent + 1)}materials: [ {', '.join(mat_ids_)} ]")
+
+            model_lines_ = self._apply_object_custom_properties(obj, model_lines_)
 
             # children recursive
             for child in obj.children:
-                model_lines_.extend(ln for ln in "\n".join(
-                    self._obj_qml(child, model_indent + 1, instance_matrix=instance_matrix, export_parent_matrix=exported_world, render_objects=render_objects, reference_parent_matrix=reference_world)).split("\n"))
+                model_lines_.extend(
+                    ln for ln in "\n".join(
+                        self._obj_qml(
+                            child,
+                            model_indent + 1,
+                            instance_matrix=instance_matrix,
+                            export_parent_matrix=exported_world,
+                            render_objects=render_objects,
+                            reference_parent_matrix=reference_world)).split("\n"))
 
             # closing Model
             model_lines_.append(f"{I(model_indent)}}}")
@@ -1133,7 +1446,7 @@ class BalsamExporter:
                 self.static_collision_blocks.append("\n".join(collision_lines))
                 lines = model_lines_
             el'''
-            if rigid_body_ != None:
+            if rigid_body_ is not None:
                 is_static_ = rigid_body_.type == 'PASSIVE'
                 self.uses_physics = True
                 lines = [f'{I(d)}StaticRigidBody {{' if is_static_ else f'{I(d)}DynamicRigidBody {{',
@@ -1142,45 +1455,48 @@ class BalsamExporter:
                          f'{I(d + 1)}scale: Qt.vector3d{sc}']
 
                 if not is_static_:
-                    lines.extend([f'{I(d+1)}isKinematic: {"true" if rigid_body_.kinematic else "false"}',
-                                  f'{I(d+1)}mass: {rigid_body_.mass}'
-                                 ])
+                    lines.extend([f'{I(d + 1)}isKinematic: {"true" if rigid_body_.kinematic else "false"}',
+                                  f'{I(d + 1)}mass: {rigid_body_.mass}'
+                                  ])
                 if not rigid_body_.enabled or (is_static_ and rigid_body_.kinematic):
-                    lines.extend([f'{I(d+1)}simulationEnabled: false'])
+                    lines.extend([f'{I(d + 1)}simulationEnabled: false'])
 
                 collision_source_ = mesh_["source"]
                 if mirror_info:
-                    collision_source_ = self._static_collision_mesh(obj, mesh_['source'], exported_world)
+                    collision_source_ = self._static_collision_mesh(
+                        obj, mesh_['source'], exported_world)
 
                 def fill_collision_shape(rigid_body):
-                    lines_  = []
+                    lines_ = []
                     if rigid_body.collision_shape == 'BOX':
-                        lines_.extend([f"{I(d+1)}collisionShapes: BoxShape {{"])
+                        lines_.extend(
+                            [f"{I(d + 1)}collisionShapes: BoxShape {{"])
                     if rigid_body.collision_shape == 'SPHERE':
-                        lines_.extend([f"{I(d+1)}collisionShapes: SphereShape {{"])
+                        lines_.extend(
+                            [f"{I(d + 1)}collisionShapes: SphereShape {{"])
                     if rigid_body.collision_shape == 'CAPSULE':
-                        lines_.extend([f"{I(d+1)}collisionShapes: CapsuleShape {{"])
+                        lines_.extend(
+                            [f"{I(d + 1)}collisionShapes: CapsuleShape {{"])
                     if rigid_body.collision_shape == 'CONVEX_HULL':
-                        lines_.extend([f"{I(d+1)}collisionShapes: LM.ConvexMeshShape {{",
-                                       f'{I(d+2)}source: "{collision_source_}"'])
+                        lines_.extend([f"{I(d + 1)}collisionShapes: LM.ConvexMeshShape {{",
+                                       f'{I(d + 2)}source: "{collision_source_}"'])
                     if rigid_body.collision_shape == 'MESH':
-                        lines_.extend([f"{I(d+1)}collisionShapes: LM.TriangleMeshShape {{",
-                                       f'{I(d+2)}source: "{collision_source_}"'])
+                        lines_.extend([f"{I(d + 1)}collisionShapes: LM.TriangleMeshShape {{",
+                                       f'{I(d + 2)}source: "{collision_source_}"'])
 
                     lines_.extend([
                         f"{I(d + 2)}enableDebugDraw: true",
-                        #f"{I(d+2)}position: Qt.vector3d{pos}",
-                        #f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
+                        # f"{I(d+2)}position: Qt.vector3d{pos}",
+                        # f"{I(d+2)}eulerRotation: Qt.vector3d{rot}",
                         f"{I(d + 1)}}}",
                     ])
 
                     return lines_
 
-
                 lines.extend(fill_collision_shape(rigid_body_))
                 lines.extend(model_lines_)
 
-                #if not is_identity_scale(sc):
+                # if not is_identity_scale(sc):
                 #    lines.append(f"{I(d+2)}scale: Qt.vector3d{sc}")
 
                 # closing StaticRigidBody
@@ -1196,93 +1512,121 @@ class BalsamExporter:
             self.uses_spatial_audio = True
             source = self._export_sound(obj.data.sound)
             if abs(obj.data.pitch - 1.0) > 0.000001:
-                self.s.report({'WARNING'}, f"Speaker {obj.name}: SpatialSound has no pitch control; pitch {obj.data.pitch} is retained as metadata.")
+                self.s.report({'WARNING'}, f"Speaker {obj.name}: SpatialSound has no pitch control; pitch {
+                              obj.data.pitch} is retained as metadata.")
 
             animation = obj.animation_data
             if animation and animation.nla_tracks:
-                self.s.report({'WARNING'}, f"Speaker {obj.name}: NLA audio playback scheduling is not exported; use autoPlay/loops or runtime playback controls.")
-            #lines = [f"{I(d)}Node {{", f"{I(d+1)}id: {nid}",
+                self.s.report({'WARNING'}, f"Speaker {
+                              obj.name}: NLA audio playback scheduling is not exported; use autoPlay/loops or runtime playback controls.")
+            # lines = [f"{I(d)}Node {{", f"{I(d+1)}id: {nid}",
             #         f"{I(d+1)}objectName: {json.dumps(obj.name)}",
             #         f"{I(d+1)}position: Qt.vector3d{pos}",
             #         f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
             #         f"{I(d+1)}scale: Qt.vector3d{sc}"]
-            lines = export_speaker(obj, nid, d, source, pos, rot, sc, bpy.context.scene.audio_distance_model, self.s.convert_coords, with_object_name=self.with_object_name)
+            lines = export_speaker(obj, nid, d, source, pos, rot, sc, bpy.context.scene.audio_distance_model,
+                                   self.s.convert_coords, with_object_name=self.with_object_name)
+            lines = self._apply_object_custom_properties(obj, lines)
             for child in obj.children:
                 lines.extend(self._obj_qml(child, d + 1, instance_matrix=instance_matrix,
-                                          export_parent_matrix=exported_world, render_objects=render_objects,
-                                          reference_parent_matrix=reference_world))
-            #lines.append(f"{I(d)}}}")
+                                           export_parent_matrix=exported_world, render_objects=render_objects,
+                                           reference_parent_matrix=reference_world))
+            # lines.append(f"{I(d)}}}")
             blocks.append("\n".join(lines))
 
         elif obj.type == 'LIGHT' and self.s.export_lights:
-            blocks.append(light_qml(obj, d, self.s.convert_coords, self.with_object_name))
+            blocks.append(
+                '\n'.join(self._apply_object_custom_properties(obj, light_qml(
+                    obj, d, self.s.convert_coords, self.with_object_name).split('\n'))))
         elif obj.type == 'CAMERA' and self.s.export_cameras:
-            blocks.append(camera_qml(obj, d, self.s.convert_coords, self.with_object_name))
+            blocks.append('\n'.join(self._apply_object_custom_properties(obj, camera_qml(
+                obj, d, self.s.convert_coords, self.with_object_name).split('\n'))))
         elif obj.type == 'EMPTY':
-            parent_id = self.node_ids.get(obj.parent.name, None) if obj.parent else None
-            lines = export_shipmate(obj, nid, d, parent_id, with_object_name=self.with_object_name)
+            parent_id = self.node_ids.get(
+                obj.parent.name, None) if obj.parent else None
+            lines = export_shipmate(
+                obj, nid, d, parent_id, with_object_name=self.with_object_name)
             if any("LM.SpatialSound {" in line for line in lines):
                 self.uses_spatial_audio = True
 
             if len(lines) == 0:
-                is_collection_ = obj.instance_type == "COLLECTION" and obj.instance_collection != None
-                #node_name_ = sanitize(obj.instance_collection.name) if is_collection_ else 'Node'
+                is_collection_ = obj.instance_type == "COLLECTION" and obj.instance_collection is not None
+                # node_name_ = sanitize(obj.instance_collection.name) if is_collection_ else 'Node'
                 lines = [f"{I(d)}Node {{",
                          # f"{I(d+1)}id: {nid}",
-                         f'{I(d+1)}objectName: "{obj.name}"' if self.with_object_name else "",
-                         f"{I(d+1)}position: Qt.vector3d{pos}",
-                         f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
-                         f"{I(d+1)}scale: Qt.vector3d{sc}"]
+                         f'{I(d + 1)}objectName: "{obj.name}"' if self.with_object_name else "",
+                         f"{I(d + 1)}position: Qt.vector3d{pos}",
+                         f"{I(d + 1)}eulerRotation: Qt.vector3d{rot}",
+                         f"{I(d + 1)}scale: Qt.vector3d{sc}"]
 
                 print(f'>>>EMPTY processing: {obj.name}, instance_type: {obj.instance_type}, instance_collection: {obj.instance_collection} \
                     obj.lib: {obj.library.name if obj.library else None}, data.lib: {obj.data.library.name if obj.data and obj.data.library else None} \
                     obj.instcol.lib: {obj.instance_collection.library.name if obj.instance_collection and obj.instance_collection.library else None}, children: {len(obj.children)}')
 
                 if is_collection_:
-                    #col_offs_ = qt_pos(obj.instance_collection.instance_offset)
+                    # col_offs_ = qt_pos(obj.instance_collection.instance_offset)
 
-                    #for chobj in obj.instance_collection.children:
+                    # for chobj in obj.instance_collection.children:
                     #    print(f'>>>COLLECTION processing collection child obj name: {chobj.name}, cobj: {chobj}')
                     #    lines.extend(ln for ln in
                     #             "\n".join(self._obj_qml(chobj, d + 1, col_offs_)).split("\n"))
 
-                    #write to file
+                    # write to file
                     tabs_ = 0
                     collection_matrix = exported_world
-                    with self._collection_instance_properties(obj) as property_suffix:
-                        col_name_ = self._collection_component_type(obj.instance_collection) + property_suffix
+                    with self._collection_instance_properties(obj) as (
+                            qml_properties, qml_value, instance_properties):
+                        col_name_ = self._collection_component_type(
+                            obj.instance_collection)
                         if collection_matrix.to_3x3().determinant() < -1e-6:
                             # A reusable component contains fixed material bindings.
                             # Odd/even instance contexts therefore need separate files.
                             col_name_ += "_Mirrored"
                         if collection_has_never_mirror(obj.instance_collection):
-                            col_name_ += restoration_component_suffix(exported_world, reference_world)
+                            col_name_ += restoration_component_suffix(
+                                exported_world, reference_world)
+                        component_qml_properties = self._collection_instance_qml_schemas.get(
+                            obj.instance_collection, qml_properties)
                         data_ = self.process_collection(
                             obj.instance_collection, tabs=tabs_ + 1,
                             instance_matrix=collection_matrix, export_parent_matrix=exported_world, reference_parent_matrix=reference_world)
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
-                                      'import QtQuick3D.SpatialAudio' if any('LM.SpatialSound {' in block for block in data_) else '',
+                                      'import QtQuick3D.SpatialAudio' if any(
+                                          'LM.SpatialSound {' in block for block in data_) else '',
                                       'import QtQuick3D.Physics' if self.uses_physics else '',
-                                      'import LogicModule as LM' if uses_logic_module("\n".join(data_)) else '',
+                                      'import LogicModule as LM' if uses_logic_module(
+                                          "\n".join(data_)) else '',
                                       'import "."',
                                       '',
-                                      f'{I(tabs_)}Node {{']
-                                      #f'{I(tabs_+1)}id: root' if any(is_qml_property_animation(child) and child.parent is None for child in obj.instance_collection.all_objects) else '']
-                    #out_file_data_.extend(lines)
+                                      f'{I(tabs_)}Node {{',
+                                      f'{I(tabs_ + 1)}id: root']
+                    out_file_data_.extend(
+                        f'{I(tabs_ + 1)}property {prop["qml_type"]} {prop["qml_name"]}'
+                        for prop in component_qml_properties)
+                    # f'{I(tabs_+1)}id: root' if any(is_qml_property_animation(child) and child.parent is None for child in obj.instance_collection.all_objects) else '']
+                    # out_file_data_.extend(lines)
                     out_file_data_.extend(data_)
                     qml_text_ = "\n".join(out_file_data_)
                     qml_text_ += f'\n{I(tabs_)}}}'
-                    (self.root / f'{col_name_}.qml').write_text(qml_text_, encoding='utf-8')
+                    component_path_ = self.root / f'{col_name_}.qml'
+                    if col_name_ not in self._written_collection_instance_components:
+                        component_path_.write_text(qml_text_, encoding='utf-8')
+                        self._written_collection_instance_components.add(col_name_)
                     self.component_files.add(f'{col_name_}.qml')
 
-                    #lines.append(qml_text_)#, offset=col_offs_))
+                    # lines.append(qml_text_)#, offset=col_offs_))
                     lines = [f'{I(d)}{col_name_} {{',
-                             f'{I(d+1)}objectName: "{obj.name}"' if self.with_object_name else "",
-                             f"{I(d+1)}position: Qt.vector3d{pos}",
-                             f"{I(d+1)}eulerRotation: Qt.vector3d{rot}",
-                             f"{I(d+1)}scale: Qt.vector3d{sc}"]
+                             f'{I(
+                                 d + 1)}objectName: "{obj.name}"' if self.with_object_name else "",
+                             *[
+                                 f'{I(d + 1)}{prop["qml_name"]}: {qml_value(prop["value"])}'
+                                 for prop in instance_properties
+                    ],
+                        f"{I(d + 1)}position: Qt.vector3d{pos}",
+                        f"{I(d + 1)}eulerRotation: Qt.vector3d{rot}",
+                        f"{I(d + 1)}scale: Qt.vector3d{sc}"]
 
                     '''
                     for cobj in obj.instance_collection.all_objects:
@@ -1294,10 +1638,9 @@ class BalsamExporter:
                         else:
                             print(f'ingoring...')
                     '''
-                #else:
+                # else:
 
-
-                #if hosts_property_animation:
+                # if hosts_property_animation:
                 #    lines.insert(1, f"{I(d+1)}id: {nid}")
 
                 # Object children belong to this particular instance, not to
@@ -1305,6 +1648,7 @@ class BalsamExporter:
                 # final Node/component block so they cannot be discarded.
                 # Their transforms are parent-local; the collection offset has
                 # already been applied to the parent.
+                lines = self._apply_object_custom_properties(obj, lines)
                 for child in obj.children:
                     lines.extend(ln for ln in "\n".join(
                         self._obj_qml(child, d + 1, instance_matrix=instance_matrix,
@@ -1313,6 +1657,7 @@ class BalsamExporter:
                 lines.append(f"{I(d)}}}")
 
             else:
+                lines = self._apply_object_custom_properties(obj, lines)
                 closing_line = lines.pop()
                 for child in obj.children:
                     lines.extend(self._obj_qml(
@@ -1333,7 +1678,8 @@ class BalsamExporter:
         type_name_ = collection_qml_type_name(collection.name)
         owner_ = self._collection_component_names.get(type_name_)
         if owner_ is not None and owner_ != collection:
-            identity_ = f'{collection.library.filepath if collection.library else ""}/{collection.name_full}'
+            identity_ = f'{
+                collection.library.filepath if collection.library else ""}/{collection.name_full}'
             digest_ = hashlib.sha256(identity_.encode('utf-8')).hexdigest()[:8]
             type_name_ = f'{type_name_}_{digest_}'
 
@@ -1404,25 +1750,31 @@ class BalsamExporter:
             imports_.extend(['import "."', ''])
 
             collection_name_ = component_['collection'].name
-            lines_ = [f'// {component_["file"]}', *imports_, 'Node {', '    id: root']
+            lines_ = [f'// {component_["file"]}',
+                      *imports_, 'Node {', '    id: root']
             if self.with_object_name:
-                lines_.append(f'    objectName: {json.dumps(collection_name_)}')
+                lines_.append(f'    objectName: {
+                              json.dumps(collection_name_)}')
             if material_section_:
                 lines_.extend(['', '    // Materials', material_section_])
             if body_:
                 lines_.extend(['', body_])
             lines_.append('}')
-            (self.root / component_['file']).write_text('\n'.join(lines_) + '\n', encoding='utf-8')
+            (self.root / component_['file']
+             ).write_text('\n'.join(lines_) + '\n', encoding='utf-8')
             self.component_files.add(component_['file'])
 
-    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None, render_objects=None, reference_parent_matrix=None, split_local_collections=False):
+    def process_collection(self, collection, tabs=2, offset=tuple((0, 0, 0)), instance_matrix=None, export_parent_matrix=None,
+                           render_objects=None, reference_parent_matrix=None, split_local_collections=False):
         if render_objects is None:
             render_objects = renderable_collection_objects(collection)
         objs_ = []
         node_blocks_ = []
-        col_offs_ = qt_pos(collection.instance_offset) if self.s.convert_coords else tuple(collection.instance_offset)
+        col_offs_ = qt_pos(collection.instance_offset) if self.s.convert_coords else tuple(
+            collection.instance_offset)
 
-        print(f'>>>COLLECTION processing: {collection.name}, hide_render: {collection.hide_render}, offset: {col_offs_}, instance offset: {collection.instance_offset}, offset: {offset}')
+        print(f'>>>COLLECTION processing: {collection.name}, hide_render: {collection.hide_render}, offset: {
+              col_offs_}, instance offset: {collection.instance_offset}, offset: {offset}')
         for child_ in collection.children:
             if not child_.hide_render:
                 objs_.append(f'ch: {child_.name}')
@@ -1431,7 +1783,8 @@ class BalsamExporter:
                         child_, offset=col_offs_, instance_matrix=instance_matrix,
                         export_parent_matrix=export_parent_matrix,
                         reference_parent_matrix=reference_parent_matrix)
-                    node_blocks_.append(f'{"    " * tabs}{component_type_} {{}}')
+                    node_blocks_.append(
+                        f'{"    " * tabs}{component_type_} {{}}')
                 else:
                     node_blocks_.extend(self.process_collection(
                         child_, tabs=tabs, offset=col_offs_, instance_matrix=instance_matrix,
@@ -1442,10 +1795,12 @@ class BalsamExporter:
         # self elements in collection
         for obj_ in collection.objects:
             renderable_ = obj_.parent is None and not obj_.hide_render
-            print(f'[{collection.name}] processing objects in COLLECTION w/ obj: {obj_.name}, type: {obj_.type}, parent: {obj_.parent.name if obj_.parent else None}, hide_render: {obj_.hide_render} {", IGNORING..." if not renderable_ else ""}')
+            print(f'[{collection.name}] processing objects in COLLECTION w/ obj: {obj_.name}, type: {obj_.type}, parent: {
+                  obj_.parent.name if obj_.parent else None}, hide_render: {obj_.hide_render} {", IGNORING..." if not renderable_ else ""}')
             if renderable_:
                 objs_.append(f'{obj_.name}')
-                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_, instance_matrix=instance_matrix, export_parent_matrix=export_parent_matrix, render_objects=render_objects, reference_parent_matrix=reference_parent_matrix))
+                node_blocks_.extend(self._obj_qml(obj_, d=tabs, offset=col_offs_, instance_matrix=instance_matrix,
+                                    export_parent_matrix=export_parent_matrix, render_objects=render_objects, reference_parent_matrix=reference_parent_matrix))
 
         self.s.report({"INFO"}, f'root objs: {objs_}')
         return node_blocks_
@@ -1453,6 +1808,8 @@ class BalsamExporter:
     def export(self):
         scene = bpy.context.scene
         stem = sanitize(self.qml_path.stem)
+
+        self._prepare_collection_instance_qml_schemas(scene)
 
         # Process all top-level objects
         node_blocks = self.process_collection(
@@ -1480,7 +1837,9 @@ class BalsamExporter:
                                    for l in mq.split("\n"))
             mat_section += reindented + "\n\n"
 
-        scene_body = mat_section + "\n".join(node_blocks) + "\n".join(self.static_collision_blocks) + anim
+        scene_body = mat_section + \
+            "\n".join(node_blocks) + \
+            "\n".join(self.static_collision_blocks) + anim
         imports += [""]
         if uses_logic_module(scene_body):
             imports.append('import LogicModule as LM')
@@ -1586,7 +1945,7 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
     bl_label = "Qt Quick 3D (.qml)"
     bl_options = {'PRESET', 'UNDO'}
 
-    filepath:    bpy.props.StringProperty(subtype='FILE_PATH')
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
     filter_glob: bpy.props.StringProperty(default="*.qml", options={'HIDDEN'})
 
     with_object_name: bpy.props.BoolProperty(
@@ -1686,7 +2045,8 @@ class EXPORT_OT_qt_balsam(bpy.types.Operator):
             if not self.use_meshoptimizer:
                 b2.prop(self, "lod_vertex_caps")
         camera_row = b2.row()
-        camera_row.enabled = not (self.generate_lods and self.use_meshoptimizer)
+        camera_row.enabled = not (
+            self.generate_lods and self.use_meshoptimizer)
         camera_row.prop(self, "lod_camera_ranges")
         if self.generate_lods and self.use_meshoptimizer:
             b2.label(text="meshoptimizer uses camera distance ranges", icon='INFO')
@@ -1746,7 +2106,8 @@ class IMPORT_OT_qt_mesh(bpy.types.Operator, ImportHelper):
             self.report({'ERROR'}, f"Failed to import Qt .mesh: {exc}")
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"Imported {len(objects)} Qt Quick 3D mesh object(s).")
+        self.report({'INFO'}, f"Imported {
+                    len(objects)} Qt Quick 3D mesh object(s).")
         return {'FINISHED'}
 
     def draw(self, context):

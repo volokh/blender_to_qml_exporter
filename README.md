@@ -112,6 +112,45 @@ Images are saved as PNG using `image.save()` for both packed and unpacked images
 Their original Blender filepath and valid file-format setting are restored after
 saving. Export is not a byte-for-byte copy of the original image file.
 
+## Object custom properties
+
+Additional custom properties on Blender objects are exported on their corresponding
+QML objects, including Shipmate controls, meshes, Empty nodes, cameras, lights,
+and speakers:
+
+| Blender custom property | Generated QML |
+| --- | --- |
+| `self.id = myControl` (string) | `id: myControl` |
+| `self.value = root.inputValue` (string) | `value: root.inputValue` |
+| `quantity = 3` (integer) | `property int quantity: 3` |
+| `pressure = 1.5` (float) | `property real pressure: 1.5` |
+| `closed = true` (boolean) | `property bool closed: true` |
+| `input = root.inputValue` (string) | `property var input: root.inputValue` |
+
+The `self.` prefix assigns an existing QML member instead of declaring a property.
+An existing generated binding or declaration with the same name is updated, not
+duplicated; nested child objects are not affected. An unprefixed property also
+replaces an existing generated value if its name already exists. If both spellings
+are present, the explicit `self.` value wins.
+
+Existing custom properties owned by a Shipmate control (such as `qml_type`,
+`value`, `change_step`, or animation `easing.type`) keep their original exporter
+logic and are not exported a second time. Use `self.value`, for example, to
+explicitly override the final QML value without changing the control's Blender
+settings.
+
+Strings are raw QML expressions: include quotes yourself for string literals.
+Blank expressions, invalid property names, non-finite numeric values, and invalid
+`self.id` values are export errors. QML ids must be unquoted identifiers beginning
+with a lowercase letter or underscore. Arrays and groups use `var`; integers
+outside the 32-bit QML `int` range use `var` with a warning.
+
+Collection-instance properties retain the parent-scope behavior below: their
+component interfaces are declared without assignments. A `self.*` property on
+an instance applies only to that instance, not to the collection's members.
+Member-authored custom properties keep their own values; temporary instance
+overrides are not baked into additional member-property declarations.
+
 ## Collections, visibility, and reuse
 
 - Collection instances reference generated QML components. Repeated instances
@@ -119,16 +158,34 @@ saving. Export is not a byte-for-byte copy of the original image file.
 - Custom properties on a collection-instance EMPTY override matching custom
   properties on every object in the instantiated collection during export,
   including parented objects, child collections, and nested collection instances.
+  Blender-registered runtime properties such as `cycles`, the `_RNA_UI`
+  metadata entry, and `booleans` property groups are not exported as overrides.
+  Other user-defined property groups remain supported.
   For example, set `closed = true` on the instance in `user.blend`; exporters
   reading `Door['closed']` or `DoorHandle.get('closed')` see `True`, even if those
   objects define `closed = false` in `library.blend`. Unrelated object properties
   remain intact. Overrides replace whole property values, not individual group
   fields; outer-instance overrides also propagate through nested instances.
-  These are export-time object properties, not automatically generated QML
-  properties, and do not modify mesh/material datablock properties.
-  Original values are restored even if export fails; the library file is not
-  changed. Instance overrides generate deterministic `_Props_...` component
-  and mesh variants so different instances cannot share incompatible output.
+  Existing property groups are recreated when applying and restoring overrides,
+  avoiding Blender's restrictions on assigning dictionaries into some groups.
+  The collection component declares corresponding QML properties, and each
+  instance receives its own value in the parent QML, e.g.
+  `GaugeAir { closed: true }`. Values are not baked into mesh filenames.
+  Original Blender values are restored even if export fails; the linked library
+  file is not changed. The collection keeps its normal stable component name;
+  no per-instance `_Props_...` QML files are generated. Its generated QML
+  component declares the union of custom-property interfaces needed by its
+  instances, while each instance carries its own values in the parent QML.
+  Blender floats use QML `real` (the QML equivalent of `qreal`), 32-bit integers
+  use `int`, and booleans use `bool`. Strings, arrays and groups use `var`;
+  integers outside the QML `int` range use `var` with a warning.
+  When instance values for the same property mix integers and floats, its
+  shared type is `real`; incompatible types use `var` and emit a warning.
+- String custom-property values on collection instances are emitted verbatim as
+  QML expressions. For `prop_1: root.prop_value`, enter `root.prop_value` in
+  Blender; for a string literal, include the quotes yourself, e.g. `"value"` or
+  `'value'`. Ensure identifiers are in scope in the parent QML. Blank values are
+  errors. Strings inside structured property groups remain JSON string values.
 - To override only one named object, add `DoorHandle.enabled = true` on the
   collection-instance EMPTY. The first dot separates the exact, case-sensitive
   Blender object name from its custom-property name. Only `DoorHandle['enabled']`
@@ -139,7 +196,11 @@ saving. Export is not a byte-for-byte copy of the original image file.
   members. Additional dots belong to the property name, for example
   `DoorHandle.easing.type` sets `DoorHandle['easing.type']`.
   Unmatched object names produce an export warning; empty names/properties are
-  errors. As with other instance overrides, originals are restored after export.
+  errors. The component exposes a safe property name such as
+  `override_DoorHandle_enabled`. Targeted overrides win over a collection-wide
+  override of the same property for that member while exporters run. Generated
+  QML does not automatically bind or forward these properties to members;
+  nested collection instances retain their own explicitly authored properties.
 - Separate objects with different evaluated modifier results can receive distinct
   mesh filenames even when they share a Blender mesh datablock.
 - Objects with `hide_render=True` are omitted, including during recursive export.
@@ -260,6 +321,13 @@ Shipmate EMPTY markers recursively export their Blender children inside their
 QML component block. For example, parent a `Qml.HoverableMatSwitcher` EMPTY to
 a `Qml.Rheostat` EMPTY to nest `LM.HoverableMaterialSwitcher` inside
 `LM.RheostatButton`. Hidden-render children and their subtrees remain excluded.
+
+**Add → Shipmate → Qml.NodeSwitcher** creates an EMPTY exported as
+`LM.NodeSwitcher { view: parent }`, including when nested beneath another
+Shipmate marker or inside a linked collection. Manually authored
+`qml_type = QML.NodeSwitcher` is also recognized. Use `self.activated` for the
+activation value or binding, and `self.view` to override the default target.
+Other custom properties follow the object-property rules above.
 
 ## Import a Qt mesh into Blender
 
