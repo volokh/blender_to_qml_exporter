@@ -16,6 +16,8 @@ from .shipmate.qt_step_sound import export_speaker
 from .shipmate.qt_property_animation import is_qml_property_animation
 from mathutils import Vector, Euler
 from pathlib import Path
+from contextlib import contextmanager
+from idprop.types import IDPropertyArray, IDPropertyGroup
 import re
 import json
 import struct
@@ -616,10 +618,97 @@ class BalsamExporter:
         self._collection_components = {}
         self._collection_component_names = {}
         self._active_collection_materials = []
+        self._instance_path = []
+        self._instance_property_suffix = ''
+        self._instance_target_properties = {}
+        self._instance_property_sources = {}
         self.node_ids = {}   # blender_name → qml id
         self.uses_shipmate_material = False
         self.uses_physics = False
         self.uses_spatial_audio = False
+
+    @contextmanager
+    def _collection_instance_properties(self, instance):
+        def copy_value(value):
+            if isinstance(value, IDPropertyGroup):
+                return {key: copy_value(item) for key, item in value.items()}
+            if isinstance(value, IDPropertyArray):
+                return value.to_list()
+            return value
+
+        source = self._instance_property_sources.get(instance, instance)
+        properties = {key: copy_value(value) for key, value in source.items()
+                      if key != '_RNA_UI'}
+        global_properties = {}
+        targeted_properties = {}
+        for key, value in properties.items():
+            if '.' not in key:
+                global_properties[key] = value
+                continue
+            target, property_name = key.split('.', 1)
+            if not target or not property_name:
+                raise ValueError(f"{instance.name}: invalid object-property override {key!r}")
+            targeted_properties.setdefault(target, {})[property_name] = value
+
+        if targeted_properties:
+            visited = set()
+            names = set()
+
+            def collect_names(collection):
+                if collection in visited:
+                    return
+                visited.add(collection)
+                for member in collection.all_objects:
+                    names.add(member.name)
+                    if member.instance_type == 'COLLECTION' and member.instance_collection:
+                        collect_names(member.instance_collection)
+
+            collect_names(instance.instance_collection)
+            for target in targeted_properties:
+                if target not in names:
+                    self.s.report({'WARNING'}, f"{instance.name}: override target {target!r} "
+                                  "does not match any object in the collection")
+
+        original_targets = self._instance_target_properties
+        original_sources = self._instance_property_sources
+        self._instance_property_sources = dict(original_sources)
+        effective_targets = {name: dict(values) for name, values in targeted_properties.items()}
+        for name, values in original_targets.items():
+            effective_targets.setdefault(name, {}).update(values)
+        self._instance_target_properties = effective_targets
+        original_suffix = self._instance_property_suffix
+        self._instance_path.append((
+            instance.library.filepath if instance.library else '', instance.name_full))
+        saved = []
+        try:
+            if properties or effective_targets:
+                identity = json.dumps(self._instance_path)
+                self._instance_property_suffix = '_Props_' + hashlib.sha256(
+                    identity.encode('utf-8')).hexdigest()[:12]
+                for member in instance.instance_collection.all_objects:
+                    if member.instance_type == 'COLLECTION' and member.instance_collection:
+                        source = {key: copy_value(value) for key, value in member.items()}
+                        source.update(global_properties)
+                        self._instance_property_sources[member] = source
+                    overrides = dict(global_properties)
+                    overrides.update(effective_targets.get(member.name, {}))
+                    original = {key: copy_value(member[key])
+                                for key in overrides if key in member}
+                    saved.append((member, original, overrides))
+                    for key, value in overrides.items():
+                        member[key] = value
+            yield self._instance_property_suffix
+        finally:
+            for member, original, overrides in reversed(saved):
+                for key in overrides:
+                    if key in original:
+                        member[key] = original[key]
+                    elif key in member:
+                        del member[key]
+            self._instance_path.pop()
+            self._instance_property_suffix = original_suffix
+            self._instance_target_properties = original_targets
+            self._instance_property_sources = original_sources
 
     def _mirror_key(self, mirror_info):
         if not mirror_info:
@@ -869,6 +958,7 @@ class BalsamExporter:
         if obj.type in MESH_EXPORT_OBJECT_TYPES:
             cloth = cloth_modifier(obj)
             export_data_name_ = data_name_ if obj.type == 'MESH' else f"{obj.type}_{data_name_}"
+            export_data_name_ += self._instance_property_suffix
             # Repeated instances of the same source object share evaluated
             # geometry. Distinct objects with modifiers may require different
             # meshes even when they use the same Blender mesh datablock.
@@ -1159,16 +1249,17 @@ class BalsamExporter:
                     #write to file
                     tabs_ = 0
                     collection_matrix = exported_world
-                    col_name_ = self._collection_component_type(obj.instance_collection)
-                    if collection_matrix.to_3x3().determinant() < -1e-6:
-                        # A reusable component contains fixed material bindings.
-                        # Odd/even instance contexts therefore need separate files.
-                        col_name_ += "_Mirrored"
-                    if collection_has_never_mirror(obj.instance_collection):
-                        col_name_ += restoration_component_suffix(exported_world, reference_world)
-                    data_ = self.process_collection(
-                        obj.instance_collection, tabs=tabs_ + 1,
-                        instance_matrix=collection_matrix, export_parent_matrix=exported_world, reference_parent_matrix=reference_world)
+                    with self._collection_instance_properties(obj) as property_suffix:
+                        col_name_ = self._collection_component_type(obj.instance_collection) + property_suffix
+                        if collection_matrix.to_3x3().determinant() < -1e-6:
+                            # A reusable component contains fixed material bindings.
+                            # Odd/even instance contexts therefore need separate files.
+                            col_name_ += "_Mirrored"
+                        if collection_has_never_mirror(obj.instance_collection):
+                            col_name_ += restoration_component_suffix(exported_world, reference_world)
+                        data_ = self.process_collection(
+                            obj.instance_collection, tabs=tabs_ + 1,
+                            instance_matrix=collection_matrix, export_parent_matrix=exported_world, reference_parent_matrix=reference_world)
 
                     out_file_data_ = ['import QtQuick',
                                       'import QtQuick3D',
@@ -1220,6 +1311,15 @@ class BalsamExporter:
                                       export_parent_matrix=exported_world, render_objects=render_objects, reference_parent_matrix=reference_world)).split("\n"))
 
                 lines.append(f"{I(d)}}}")
+
+            else:
+                closing_line = lines.pop()
+                for child in obj.children:
+                    lines.extend(self._obj_qml(
+                        child, d + 1, instance_matrix=instance_matrix,
+                        export_parent_matrix=exported_world, render_objects=render_objects,
+                        reference_parent_matrix=reference_world))
+                lines.append(closing_line)
 
             if len(lines) > 0:
                 blocks.append("\n".join(lines))

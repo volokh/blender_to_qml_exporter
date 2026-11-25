@@ -116,6 +116,30 @@ saving. Export is not a byte-for-byte copy of the original image file.
 
 - Collection instances reference generated QML components. Repeated instances
   reuse source geometry where possible.
+- Custom properties on a collection-instance EMPTY override matching custom
+  properties on every object in the instantiated collection during export,
+  including parented objects, child collections, and nested collection instances.
+  For example, set `closed = true` on the instance in `user.blend`; exporters
+  reading `Door['closed']` or `DoorHandle.get('closed')` see `True`, even if those
+  objects define `closed = false` in `library.blend`. Unrelated object properties
+  remain intact. Overrides replace whole property values, not individual group
+  fields; outer-instance overrides also propagate through nested instances.
+  These are export-time object properties, not automatically generated QML
+  properties, and do not modify mesh/material datablock properties.
+  Original values are restored even if export fails; the library file is not
+  changed. Instance overrides generate deterministic `_Props_...` component
+  and mesh variants so different instances cannot share incompatible output.
+- To override only one named object, add `DoorHandle.enabled = true` on the
+  collection-instance EMPTY. The first dot separates the exact, case-sensitive
+  Blender object name from its custom-property name. Only `DoorHandle['enabled']`
+  is overridden; other objects retain their own or collection-wide value.
+  Targeted overrides take precedence over collection-wide overrides and work
+  inside child collections and nested collection instances. An override targeting
+  an instance EMPTY itself does not become a collection-wide override for its
+  members. Additional dots belong to the property name, for example
+  `DoorHandle.easing.type` sets `DoorHandle['easing.type']`.
+  Unmatched object names produce an export warning; empty names/properties are
+  errors. As with other instance overrides, originals are restored after export.
 - Separate objects with different evaluated modifier results can receive distinct
   mesh filenames even when they share a Blender mesh datablock.
 - Objects with `hide_render=True` are omitted, including during recursive export.
@@ -231,6 +255,11 @@ Other Blender collision-shape types are not implemented by the current mapping.
 The 3D View **Add → Shipmate** menu provides **Qml.Hatch**, **Qml.Rheostat**, and
 **Qml.AnimatedGauge** helpers. Their custom properties are translated into the
 corresponding Shipmate QML components.
+
+Shipmate EMPTY markers recursively export their Blender children inside their
+QML component block. For example, parent a `Qml.HoverableMatSwitcher` EMPTY to
+a `Qml.Rheostat` EMPTY to nest `LM.HoverableMaterialSwitcher` inside
+`LM.RheostatButton`. Hidden-render children and their subtrees remain excluded.
 
 ## Import a Qt mesh into Blender
 
