@@ -150,6 +150,10 @@ component interfaces are declared without assignments. A `self.*` property on
 an instance applies only to that instance, not to the collection's members.
 Member-authored custom properties keep their own values; temporary instance
 overrides are not baked into additional member-property declarations.
+This also applies to Shipmate control settings: a member's authored
+`validator = root.validator` stays `validator: root.validator` in the shared
+component, while the instance's `validator` value is assigned only in its
+parent QML. No forwarding bindings are added automatically.
 
 ## Collections, visibility, and reuse
 

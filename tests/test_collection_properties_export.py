@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     handle = bpy.data.objects.new('DoorHandle', None)
     handle['qml_type'] = 'Qml.Rheostat'
     handle['pressure'] = 7.0
+    handle['validator'] = 'root.validator'
     handle.parent = door
     for obj in [door, handle]:
         collection.objects.link(obj)
@@ -60,6 +61,7 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     inner_collection = bpy.data.collections.new('InnerCollection')
     inner_member = bpy.data.objects.new('InnerMember', None)
     inner_member['closed'] = False
+    inner_member['self.validator'] = 'root.validator'
     inner_collection.objects.link(inner_member)
     inner_instance = bpy.data.objects.new('InnerInstance', None)
     inner_instance.instance_type = 'COLLECTION'
@@ -94,6 +96,8 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
             instance['count'] = 3
             instance['mixed'] = True if value else 'disabled'
             instance['vectorData'] = [1.0, 2.0, 3.0]
+            instance['validator'] = 'hpAir.validatorHp3' if value else 'lpAir.validatorLp3'
+            instance['step'] = 2.5 if value else 5.0
         bpy.context.scene.collection.objects.link(instance)
     bpy.context.view_layer.update()
 
@@ -147,6 +151,14 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
         assert 'newProperty:' not in bodies[0]
         assert 'property real pressure: 7.0' in bodies[0]
         assert 'property real pressure: 1.5' not in bodies[0]
+        assert 'validator: root.validator' in bodies[0]
+        assert 'hpAir.validatorHp3' not in bodies[0]
+        assert 'lpAir.validatorLp3' not in bodies[0]
+        assert 'step: 1.0' in bodies[0]
+        assert 'step: 2.5' not in bodies[0] and 'step: 5.0' not in bodies[0]
+        assert 'validator: hpAir.validatorHp3' in scene
+        assert 'validator: lpAir.validatorLp3' in scene
+        assert 'step: 2.5' in scene and 'step: 5.0' in scene
         assert sum('property bool closed' in body for body in bodies) == 1
         assert 'property real pressure' in bodies[0]
         assert 'property int count' in bodies[0]
@@ -183,6 +195,27 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     finally:
         addon.export_shipmate = original_shipmate
 
+    def failing_shipmate(obj, *args, **kwargs):
+        if obj.name == 'DoorHandle':
+            assert obj['validator'] == 'root.validator'
+            assert 'step' not in obj
+            raise RuntimeError('Expected Shipmate serialization failure')
+        return original_shipmate(obj, *args, **kwargs)
+
+    addon.export_shipmate = failing_shipmate
+    try:
+        failing = addon.BalsamExporter(str(output / 'ShipmateFailure.qml'), settings)
+        try:
+            failing._obj_qml(bpy.data.objects['ClosedInstance'])
+        except RuntimeError as error:
+            assert str(error) == 'Expected Shipmate serialization failure'
+        else:
+            raise AssertionError('Expected Shipmate serialization failure')
+        assert {obj: properties(obj) for obj in library_objects} == originals
+        assert failing._object_property_sources == {}
+    finally:
+        addon.export_shipmate = original_shipmate
+
     class FailingExporter(addon.BalsamExporter):
         def process_collection(self, collection, *args, **kwargs):
             if collection.name == self.fail_on:
@@ -209,6 +242,7 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     instance['InnerInstance.onlyHere'] = 42
     instance['MissingObject.enabled'] = True
     instance['DoorHandle.pressure'] = 1.25
+    instance['DoorHandle.validator'] = 'targetAir.validator'
     messages = []
     settings.report = lambda levels, message: messages.append((levels, message))
     observations.clear()
@@ -234,11 +268,17 @@ with tempfile.TemporaryDirectory(prefix='blender-collection-properties-') as fol
     assert 'enabled: root.override_DoorHandle_enabled' not in target_component
     assert 'property real override_DoorHandle_pressure' in target_component
     assert 'override_DoorHandle_pressure: 1.25' in target_scene
+    assert 'override_DoorHandle_validator: targetAir.validator' in target_scene
+    assert 'validator: root.validator' in target_component
+    assert 'targetAir.validator' not in target_component
     assert 'root.override_InnerMember_enabled' not in target_component
     inner_types = re.findall(r'^\s*(InnerCollection\w*) \{',
                              target_component, re.MULTILINE)
     assert inner_types
     inner_component = (output / f'{inner_types[0]}.qml').read_text()
+    assert 'validator: root.validator' in inner_component
+    assert 'hpAir.validatorHp3' not in inner_component
+    assert 'targetAir.validator' not in inner_component
     assert 'enabled: root.override_InnerMember_enabled' not in inner_component
     assert {obj: properties(obj) for obj in library_objects} == originals
     assert targeted._instance_target_properties == {}

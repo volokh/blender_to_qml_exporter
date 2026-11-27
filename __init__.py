@@ -647,6 +647,13 @@ def custom_properties(obj):
     }
 
 
+def set_custom_property(obj, key, value):
+    # Blender rejects dictionary assignment into some existing property groups.
+    if key in obj and (isinstance(obj[key], IDPropertyGroup) or isinstance(value, dict)):
+        del obj[key]
+    obj[key] = value
+
+
 def custom_qml_value(value, object_name):
     if isinstance(value, str):
         if not value.strip():
@@ -711,14 +718,6 @@ class BalsamExporter:
 
     @contextmanager
     def _collection_instance_properties(self, instance):
-        def set_value(member, key, value):
-            # Blender may reject dict assignment into an existing group.
-            # Recreate it so overrides replace the whole value instead of merging.
-            if key in member and (isinstance(member[key], IDPropertyGroup)
-                                  or isinstance(value, dict)):
-                del member[key]
-            member[key] = value
-
         def qml_property_name(key, target=None):
             if target is not None:
                 return f'override_{sanitize(target)}_{sanitize(key)}'
@@ -839,13 +838,13 @@ class BalsamExporter:
                                 for key in overrides if key in member}
                     saved.append((member, original, overrides))
                     for key, value in overrides.items():
-                        set_value(member, key, value)
+                        set_custom_property(member, key, value)
             yield qml_properties, qml_value, instance_properties
         finally:
             for member, original, overrides in reversed(saved):
                 for key in overrides:
                     if key in original:
-                        set_value(member, key, original[key])
+                        set_custom_property(member, key, original[key])
                     elif key in member:
                         del member[key]
             self._instance_target_properties = original_targets
@@ -1102,6 +1101,28 @@ class BalsamExporter:
     def _object_custom_properties(self, obj):
         source = self._object_property_sources.get(obj)
         return source if source is not None else custom_properties(obj)
+
+    @contextmanager
+    def _authored_object_properties(self, obj):
+        source = self._object_property_sources.get(obj)
+        if source is None:
+            yield
+            return
+        current = custom_properties(obj)
+        keys = source.keys() | current.keys()
+        try:
+            for key in keys:
+                if key in source:
+                    set_custom_property(obj, key, source[key])
+                elif key in obj:
+                    del obj[key]
+            yield
+        finally:
+            for key in keys:
+                if key in current:
+                    set_custom_property(obj, key, current[key])
+                elif key in obj:
+                    del obj[key]
 
     def _apply_object_custom_properties(self, obj, lines):
         """Merge root members before adding children; each generated member is one entry."""
@@ -1544,8 +1565,9 @@ class BalsamExporter:
         elif obj.type == 'EMPTY':
             parent_id = self.node_ids.get(
                 obj.parent.name, None) if obj.parent else None
-            lines = export_shipmate(
-                obj, nid, d, parent_id, with_object_name=self.with_object_name)
+            with self._authored_object_properties(obj):
+                lines = export_shipmate(
+                    obj, nid, d, parent_id, with_object_name=self.with_object_name)
             if any("LM.SpatialSound {" in line for line in lines):
                 self.uses_spatial_audio = True
 
