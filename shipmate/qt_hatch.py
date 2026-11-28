@@ -76,7 +76,7 @@ class OBJECT_OT_add_qml_hatch(Operator):
 
     hover_text: StringProperty(
         name="Hover text",
-        default="Hatch",
+        default="'Hatch'",
         description="Hover text"
     )
 
@@ -230,7 +230,7 @@ def export_qml_hatch(obj, nid, d):
 
     hover_text = qml_hatch_hover_text(obj)
     if hover_text:
-        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text}`']
+        lines += [f'{I(d + 1)}picker.hoverText: {hover_text}']
 
     out_value_ = qml_hatch_output_value(obj)
     if out_value_:
@@ -242,11 +242,11 @@ def export_qml_hatch(obj, nid, d):
 
     stepPositiveSound_ = get_step_pos_sound(obj)
     if stepPositiveSound_:
-        lines += [f'{I(d + 1)}initSound: "{stepPositiveSound_}"']
+        lines += [f'{I(d + 1)}initSound: {stepPositiveSound_}']
 
     stepNegativeSound_ = get_step_neg_sound(obj)
     if stepNegativeSound_:
-        lines += [f'{I(d + 1)}finalSound: "{stepNegativeSound_}"']
+        lines += [f'{I(d + 1)}finalSound: {stepNegativeSound_}']
 
     lines += [f'{I(d)}}}']
     return lines

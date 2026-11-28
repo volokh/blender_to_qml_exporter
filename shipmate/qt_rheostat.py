@@ -101,7 +101,7 @@ class OBJECT_OT_add_qml_rheostat(Operator):
 
     hover_text: StringProperty(
         name="Hover text",
-        default="Rheostat switch",
+        default="'Rheostat switch'",
         description="Hover text"
     )
 
@@ -352,7 +352,7 @@ def export_qml_rheostat(obj, nid, d, with_object_name=True):
 
     hover_text_ = qml_rheostat_hover_text(obj)
     if hover_text_:
-        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text_}`']
+        lines += [f'{I(d + 1)}picker.hoverText: {hover_text_}']
 
     if out_value_:
         lines += [f'{I(d + 1)}onValueChanged: {out_value_}']
@@ -371,11 +371,11 @@ def export_qml_rheostat(obj, nid, d, with_object_name=True):
 
     stepPositiveSound_ = get_step_pos_sound(obj)
     if stepPositiveSound_:
-        lines += [f'{I(d + 1)}wheelPositiveSound: "{stepPositiveSound_}"']
+        lines += [f'{I(d + 1)}wheelPositiveSound: {stepPositiveSound_}']
 
     stepNegativeSound_ = get_step_neg_sound(obj)
     if stepNegativeSound_:
-        lines += [f'{I(d + 1)}wheelNegativeSound: "{stepNegativeSound_}"']
+        lines += [f'{I(d + 1)}wheelNegativeSound: {stepNegativeSound_}']
 
     if obj.get("sequentialMode", False):
         lines += [f'{I(d + 1)}sequentialMode: true']

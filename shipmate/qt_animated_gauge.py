@@ -265,7 +265,7 @@ def export_qml_animated_gauge(obj, nid, d, with_object_name=True):
 
     hover_text = qml_animated_gauge_hover_text(obj)
     if hover_text:
-        lines += [f'{I(d + 1)}picker.hoverText: `{hover_text}`']
+        lines += [f'{I(d + 1)}picker.hoverText: {hover_text}']
 
     lines += [f'{I(d)}}}']
     return lines
