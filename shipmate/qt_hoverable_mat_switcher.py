@@ -1,4 +1,5 @@
 import bpy
+from .qt_export_context import ShipmateExportContext
 from bpy.types import Operator, Menu, Panel, PropertyGroup
 from bpy.props import FloatProperty, StringProperty, PointerProperty, FloatVectorProperty
 
@@ -215,7 +216,8 @@ def qt_pos(value):
 '''
 
 
-def export_qml_hoverable_mat_switcher(obj, nid, d):
+def export_qml_hoverable_mat_switcher(obj, context: ShipmateExportContext):
+    d = context.depth
     parent_ = obj.parent if obj.parent is not None else obj
     # rigid_body_ = getattr(parent_, "rigid_body", None)
     lines = [f'{I(d)}LM.HoverableMaterialSwitcher {{',

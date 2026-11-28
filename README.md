@@ -321,6 +321,24 @@ The 3D View **Add → Shipmate** menu provides **Qml.Hatch**, **Qml.Rheostat**, 
 **Qml.AnimatedGauge** helpers. Their custom properties are translated into the
 corresponding Shipmate QML components.
 
+`Qml.Hatch` exports the EMPTY's local position and rotation as `initialPosition`
+and `initialRotation` when nonzero (independently). These use the normal export
+coordinate conversion and Qt Euler angles in degrees, not the controlled parent's
+transform. Explicit `self.initialPosition` and `self.initialRotation` custom
+properties override these generated values.
+
+`Qml.AnimatedGauge` likewise exports its EMPTY's nonzero local position as
+`initialOffset`, with the normal coordinate conversion. `self.initialOffset`
+overrides the generated value.
+Internally, `export_shipmate(obj, context)` receives a typed, immutable
+`ShipmateExportContext` containing the node ID, indentation depth, parent ID,
+object-name flag, and coordinate-conversion flag.
+The same context is passed unchanged to every `export_qml_*` helper; its
+definition lives in `shipmate/qt_export_context.py` to avoid circular imports.
+These initial values are read directly from the EMPTY's Transform location and
+rotation, independently of parent transforms and collection offsets. Components
+below `1e-5` are treated as zero when deciding whether to emit them.
+
 Shipmate EMPTY markers recursively export their Blender children inside their
 QML component block. For example, parent a `Qml.HoverableMatSwitcher` EMPTY to
 a `Qml.Rheostat` EMPTY to nest `LM.HoverableMaterialSwitcher` inside

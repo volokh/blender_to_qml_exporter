@@ -1,5 +1,6 @@
 """Blender marker, editing panel and QML exporter for LM.PropertyAnimation."""
 import json
+from .qt_export_context import ShipmateExportContext
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
@@ -121,9 +122,10 @@ class OBJECT_PT_qml_property_animation(Panel):
                 layout.prop(obj, '["' + key + '"]', text=label)
 
 
-def export_qml_property_animation(obj, nid, depth, parent_id):
+def export_qml_property_animation(obj, context: ShipmateExportContext):
     """Expression strings are QML code; only property-name strings are quoted."""
 
+    nid, depth, parent_id = context.node_id, context.depth, context.parent_id
     if parent_id is None:
         raise ValueError(f"Cannot export animation {
                          nid!r}: parent_id must not be None")

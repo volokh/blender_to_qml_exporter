@@ -1,6 +1,8 @@
 # This Python file uses the following encoding: utf-8
 
 import bpy
+from .qt_export_context import ShipmateExportContext
+from .qt_initial_transform import initial_transform
 from bpy.types import Operator, Menu, Panel, PropertyGroup
 from bpy.props import FloatProperty, StringProperty, PointerProperty, FloatVectorProperty, BoolProperty
 
@@ -246,12 +248,14 @@ def qt_pos(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def export_qml_animated_gauge(obj, nid, d, with_object_name=True):
+def export_qml_animated_gauge(obj, context: ShipmateExportContext):
+    d = context.depth
+    initial_position, _ = initial_transform(obj, context.convert_coords)
     value_ = qml_animated_gauge_value(obj)
     input_value_ = qml_animated_gauge_input_value(obj)
     lines = [f'{I(d)}LM.AnimatedGauge {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d + 1)}objectName: '{obj.name}'" if with_object_name else "",
+             f"{I(d + 1)}objectName: '{obj.name}'" if context.with_object_name else "",
              f'{I(d + 1)}node: parent',
              f'{I(d + 1)}minValue: {value_[0]}',
              f'{I(d + 1)}maxValue: {value_[2]}',
@@ -262,6 +266,9 @@ def export_qml_animated_gauge(obj, nid, d, with_object_name=True):
              # f'{I(d+1)}initialValue: {qml_animated_gauge_initial_value(obj)}',
              f'{I(d + 1)}picker.parent: node.parent',
              ]
+
+    if initial_position is not None and any(abs(component) >= 1e-5 for component in initial_position):
+        lines.append(f'{I(d + 1)}initialOffset: Qt.vector3d{tuple(initial_position)}')
 
     hover_text = qml_animated_gauge_hover_text(obj)
     if hover_text:

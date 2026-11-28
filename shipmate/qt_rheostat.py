@@ -1,4 +1,5 @@
 import bpy
+from .qt_export_context import ShipmateExportContext
 from bpy.types import Operator, Menu, Panel, PropertyGroup
 from bpy.props import BoolProperty, FloatProperty, StringProperty, PointerProperty, FloatVectorProperty
 
@@ -334,12 +335,13 @@ def qt_pos(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def export_qml_rheostat(obj, nid, d, with_object_name=True):
+def export_qml_rheostat(obj, context: ShipmateExportContext):
+    d = context.depth
     value_ = qml_rheostat_value(obj)
     out_value_ = qml_rheostat_output_value(obj)
     lines = [f'{I(d)}LM.RheostatButton {{',
              # f'{I(d+1)}id: {nid}',
-             f"{I(d + 1)}objectName: '{obj.name}'" if with_object_name else "",
+             f"{I(d + 1)}objectName: '{obj.name}'" if context.with_object_name else "",
              f'{I(d + 1)}node: parent',
              f'{I(d + 1)}minValue: {value_[0]}',
              f'{I(d + 1)}maxValue: {value_[2]}',

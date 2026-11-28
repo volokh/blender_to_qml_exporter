@@ -1,4 +1,5 @@
 import bpy
+from .qt_export_context import ShipmateExportContext
 from bpy.types import Operator, Panel
 
 
@@ -41,8 +42,8 @@ class OBJECT_PT_qml_node_switcher(Panel):
         self.layout.prop(context.object, '["qml_type"]', text='Qml Type')
 
 
-def export_qml_node_switcher(obj, nid, d):
-    indent = "    " * d
+def export_qml_node_switcher(obj, context: ShipmateExportContext):
+    indent = "    " * context.depth
     return [
         f'{indent}LM.NodeSwitcher {{',
         f'{indent}    view: parent',

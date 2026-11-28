@@ -161,7 +161,9 @@ with tempfile.TemporaryDirectory(prefix='blender-object-properties-') as folder:
         control['qml_type'] = qml_type
         for key, value in values.items():
             control[key] = value
-        baseline = addon.export_shipmate(control, 'control', 0, 'customNode')
+        baseline = addon.export_shipmate(
+            control, addon.ShipmateExportContext(
+                node_id='control', depth=0, parent_id='customNode'))
         assert exporter._apply_object_custom_properties(control, baseline) == baseline, qml_type
 
     mesh = bpy.data.meshes.new('CustomMeshData')

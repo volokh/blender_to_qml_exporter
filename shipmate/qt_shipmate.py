@@ -1,4 +1,5 @@
 import bpy
+from .qt_export_context import ShipmateExportContext
 from bpy.types import Operator, Menu
 from .qt_hatch import qml_hatch_register, qml_hatch_unregister, is_qml_hatch, export_qml_hatch, OBJECT_OT_add_qml_hatch
 from .qt_rheostat import qml_rheostat_register, qml_rheostat_unregister, is_qml_rheostat, export_qml_rheostat, OBJECT_OT_add_qml_rheostat
@@ -77,22 +78,20 @@ class VIEW3D_MT_shipmate_add(Menu):
         )
 
 
-def export_shipmate(obj, nid, data, parent_id=None, with_object_name=True):
+def export_shipmate(obj, context: ShipmateExportContext):
     lines_ = []
     if is_qml_property_animation(obj):
-        lines_ = export_qml_property_animation(obj, nid, data, parent_id)
+        lines_ = export_qml_property_animation(obj, context)
     elif is_qml_hatch(obj):
-        lines_ = export_qml_hatch(obj, nid, data)
+        lines_ = export_qml_hatch(obj, context)
     elif is_qml_rheostat(obj):
-        lines_ = export_qml_rheostat(
-            obj, nid, data, with_object_name=with_object_name)
+        lines_ = export_qml_rheostat(obj, context)
     elif is_qml_animated_gauge(obj):
-        lines_ = export_qml_animated_gauge(
-            obj, nid, data, with_object_name=with_object_name)
+        lines_ = export_qml_animated_gauge(obj, context)
     elif is_qml_hoverable_mat_switcher(obj):
-        lines_ = export_qml_hoverable_mat_switcher(obj, nid, data)
+        lines_ = export_qml_hoverable_mat_switcher(obj, context)
     elif is_qml_node_switcher(obj):
-        lines_ = export_qml_node_switcher(obj, nid, data)
+        lines_ = export_qml_node_switcher(obj, context)
 
     return lines_
 

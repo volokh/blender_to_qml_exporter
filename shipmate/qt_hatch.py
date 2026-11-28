@@ -1,4 +1,6 @@
 import bpy
+from .qt_export_context import ShipmateExportContext
+from .qt_initial_transform import initial_transform
 from bpy.types import Operator, Menu, Panel, PropertyGroup
 from bpy.props import FloatProperty, StringProperty, PointerProperty, FloatVectorProperty
 
@@ -216,7 +218,9 @@ def qt_pos(value):
     return (value_[0], value_[2], -value_[1])
 
 
-def export_qml_hatch(obj, nid, d):
+def export_qml_hatch(obj, context: ShipmateExportContext):
+    d = context.depth
+    initial_position, initial_rotation = initial_transform(obj, context.convert_coords)
     parent_ = obj.parent if obj.parent is not None else obj
     rigid_body_ = getattr(parent_, "rigid_body", None)
     lines = [f'{I(d)}LM.Hatch {{',
@@ -227,6 +231,11 @@ def export_qml_hatch(obj, nid, d):
              f'{I(d + 1)}finalRotation: Qt.vector3d{qt_pos(qml_hatch_final_rotation(obj))}',
              f'{I(d + 1)}finalPosition: Qt.vector3d{qt_pos(qml_hatch_final_position(obj))}'
              ]
+
+    for name, value in (('initialPosition', initial_position),
+                        ('initialRotation', initial_rotation)):
+        if value is not None and any(abs(component) >= 1e-5 for component in value):
+            lines.append(f'{I(d + 1)}{name}: Qt.vector3d{tuple(value)}')
 
     hover_text = qml_hatch_hover_text(obj)
     if hover_text:

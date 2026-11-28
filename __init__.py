@@ -11,7 +11,7 @@ from .qt_mesh_validate import validate_qt_mesh
 from .qt_simplifier import MAX_LOD_LEVEL
 from .qt_lod_settings import active_lod_settings, lod_settings_register, lod_settings_unregister
 from .qt_bsdf_mat_importer import mat_to_quick3d
-from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate, shipmate_custom_property_names
+from .shipmate.qt_shipmate import shipmate_register, shipmate_unregister, export_shipmate, shipmate_custom_property_names, ShipmateExportContext
 from .shipmate.qt_step_sound import export_speaker
 from .shipmate.qt_property_animation import is_qml_property_animation
 from mathutils import Vector, Euler
@@ -1567,7 +1567,10 @@ class BalsamExporter:
                 obj.parent.name, None) if obj.parent else None
             with self._authored_object_properties(obj):
                 lines = export_shipmate(
-                    obj, nid, d, parent_id, with_object_name=self.with_object_name)
+                    obj, ShipmateExportContext(
+                        node_id=nid, depth=d, parent_id=parent_id,
+                        with_object_name=self.with_object_name,
+                        convert_coords=self.s.convert_coords))
             if any("LM.SpatialSound {" in line for line in lines):
                 self.uses_spatial_audio = True
 

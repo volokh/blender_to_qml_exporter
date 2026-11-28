@@ -32,7 +32,8 @@ try:
     marker['easing.amplitude'] = 1.2
     marker['easing.period'] = 0.45
     marker['easing.overshoot'] = 1.7
-    source = '\n'.join(module.export_qml_property_animation(marker, 'animation', 1, 'node_AnimatedMotor'))
+    source = '\n'.join(module.export_qml_property_animation(
+        marker, addon.ShipmateExportContext('animation', 1, 'node_AnimatedMotor')))
     for token in ['target: parent', 'duration: control_.duration', 'from: Qt.vector3d(target.eulerRotation.x',
                   'to: Qt.vector3d(target.eulerRotation.x', 'loops: Animation.Infinite', 'running: true',
                   'easing.type: Easing.InOutElastic', 'easing.amplitude: 1.2']:
@@ -43,7 +44,8 @@ try:
     assert addon.BalsamExporter(str(out / 'ElasticScene.qml'), settings).export() == {'FINISHED'}
     for easing in module.EASING_TYPES:
         marker['easing.type'] = easing
-        assert 'easing.type: Easing.' + easing in '\n'.join(module.export_qml_property_animation(marker, 'animation', 1))
+        assert 'easing.type: Easing.' + easing in '\n'.join(module.export_qml_property_animation(
+            marker, addon.ShipmateExportContext('animation', 1, 'node_AnimatedMotor')))
     marker['easing.type'] = 'BezierSpline'
     marker['easing.bezierCurve'] = '[0.25, 0.1, 0.25, 1, 1, 1]'
     marker['running'] = False
